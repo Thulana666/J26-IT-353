@@ -1,7 +1,8 @@
 "use client";
 
 import { useTransition } from "react";
-import { LogOut } from "lucide-react";
+import { AnimatedIcon } from "@/components/icons/animated-icon";
+import { LogoutIcon } from "@/components/icons/logout";
 import { logout } from "@/app/login/actions";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -60,7 +61,7 @@ export function UserMenu({ name, email, role }) {
           disabled={isPending}
           onClick={() => startTransition(() => logout())}
         >
-          <LogOut />
+          <AnimatedIcon icon={LogoutIcon} />
           {isPending ? "Signing out..." : "Sign out"}
         </DropdownMenuItem>
       </DropdownMenuContent>

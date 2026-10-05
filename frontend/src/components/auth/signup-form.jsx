@@ -2,7 +2,9 @@
 
 import Link from "next/link";
 import { useActionState } from "react";
-import { AlertCircle, Loader2 } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { AnimatedIcon } from "@/components/icons/animated-icon";
+import { BadgeAlertIcon } from "@/components/icons/badge-alert";
 import { signup } from "@/app/signup/actions";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -32,7 +34,7 @@ export function SignupForm() {
         <form action={formAction} className="grid gap-4">
           {state?.error && (
             <Alert variant="destructive">
-              <AlertCircle />
+              <AnimatedIcon icon={BadgeAlertIcon} className="translate-y-0.5" />
               <AlertDescription>{state.error}</AlertDescription>
             </Alert>
           )}
