@@ -48,7 +48,7 @@ export function AppSidebar() {
           <SidebarMenuItem>
             <SidebarMenuButton
               size="lg"
-              render={<Link href="/dashboard" onClick={handleNavigate} />}
+              render={<Link href="/" onClick={handleNavigate} />}
             >
               <span className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
                 <AnimatedIcon icon={SyringeIcon} />
