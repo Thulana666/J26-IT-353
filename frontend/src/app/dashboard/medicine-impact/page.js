@@ -38,7 +38,11 @@ export const metadata = {
 export default async function MedicineImpactOverviewPage() {
   const [events, articles, impacts, forecasts] = await Promise.all([
     getEvents(),
-    getArticles(),
+    // The Articles page shows load errors; here a failure just counts as 0.
+    getArticles().catch((error) => {
+      console.error(error);
+      return [];
+    }),
     getMedicineImpacts(),
     getForecasts(),
   ]);
