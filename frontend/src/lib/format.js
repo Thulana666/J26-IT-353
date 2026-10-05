@@ -6,6 +6,18 @@ export function formatDate(value) {
   });
 }
 
+const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
+
+// ISO country code -> name, e.g. "LK" -> "Sri Lanka".
+export function formatCountry(code) {
+  if (!code) return null;
+  try {
+    return regionNames.of(code.trim().toUpperCase());
+  } catch {
+    return code;
+  }
+}
+
 export function formatNumber(value) {
   return new Intl.NumberFormat("en-US").format(value);
 }
