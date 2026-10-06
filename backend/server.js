@@ -3,6 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 
 const supabase = require("./src/config/supabase");
+const ingestionRoutes = require("./src/ingestion/routes");
 
 const app = express();
 
@@ -43,8 +44,20 @@ app.get("/api/health", async (req, res) => {
   }
 });
 
+// Component 1: article ingestion trigger (see src/ingestion/routes.js).
+app.use("/api/ingestion", ingestionRoutes);
+
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
+app.listen(PORT, (error) => {
+  // Express 5 reports listen errors (e.g. port already in use) here.
+  if (error) {
+    console.error(
+      error.code === "EADDRINUSE"
+        ? `Port ${PORT} is already in use - is another backend already running?`
+        : `Could not start server: ${error.message}`
+    );
+    process.exit(1);
+  }
   console.log(`Server running on port ${PORT}`);
 });
