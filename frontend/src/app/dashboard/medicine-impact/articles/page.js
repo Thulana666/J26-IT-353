@@ -1,11 +1,14 @@
 import { unstable_rethrow } from "next/navigation";
-import { ARTICLE_LIMIT, getArticles } from "@/lib/data";
+import { requireUser } from "@/lib/auth";
+import { getArticlesPage } from "@/lib/data";
 import { formatCountry, formatDate, formatLanguage } from "@/lib/format";
 import { getNavItem } from "@/lib/navigation";
 import { AnimatedIcon } from "@/components/icons/animated-icon";
 import { BadgeAlertIcon } from "@/components/icons/badge-alert";
 import { FileTextIcon } from "@/components/icons/file-text";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { PagePagination } from "@/components/dashboard/page-pagination";
+import { RefreshArticlesButton } from "@/components/dashboard/refresh-articles-button";
 import { StatusBadge } from "@/components/dashboard/status-badges";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -38,36 +41,28 @@ export const metadata = {
   title: `${page.title} | PharmaTwin`,
 };
 
-// Several reports can share a title (e.g. WHO updates on the same outbreak).
-// Show only the newest of each; the database keeps them all for event analysis.
-function latestPerTitle(articles) {
-  const seen = new Set();
-  return articles.filter((article) => {
-    const key = article.title.trim().toLowerCase().replace(/\s+/g, " ");
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
+export default async function ArticlesPage({ searchParams }) {
+  const { page: requestedPage } = await searchParams;
+  const { profile } = await requireUser();
+  const canRefresh = profile?.role === "admin" && profile?.status === "active";
 
-export default async function ArticlesPage() {
-  let allArticles = [];
+  let result = null;
   let loadError = null;
   try {
-    allArticles = await getArticles();
+    result = await getArticlesPage(requestedPage);
   } catch (error) {
     // Let Next.js handle its own control-flow errors (redirects, dynamic rendering).
     unstable_rethrow(error);
     console.error(error);
     loadError = error.message;
   }
-  // getArticles() returns newest first, so the first of each title is the latest.
-  const articles = latestPerTitle(allArticles);
-  const hiddenCount = allArticles.length - articles.length;
+  const articles = result?.articles ?? [];
 
   return (
     <>
-      <PageHeader title={page.title} description={page.description} mock={false} />
+      <PageHeader title={page.title} description={page.description} mock={false}>
+        <RefreshArticlesButton canRefresh={canRefresh} />
+      </PageHeader>
 
       {loadError ? (
         <Alert variant="destructive">
@@ -82,11 +77,9 @@ export default async function ArticlesPage() {
           <CardHeader>
             <CardTitle>Collected articles</CardTitle>
             <CardDescription>
-              {allArticles.length === ARTICLE_LIMIT
-                ? `From the ${ARTICLE_LIMIT} most recent articles`
-                : `${articles.length} article${articles.length === 1 ? "" : "s"}, newest first`}
-              {hiddenCount > 0 &&
-                ` (${hiddenCount} older report${hiddenCount === 1 ? "" : "s"} with the same title hidden)`}
+              {`Showing ${(result.page - 1) * result.pageSize + 1}–${(result.page - 1) * result.pageSize + articles.length} of ${result.total} article${result.total === 1 ? "" : "s"}, newest first`}
+              {result.hidden > 0 &&
+                ` (${result.hidden} older report${result.hidden === 1 ? "" : "s"} with the same title hidden)`}
               .
             </CardDescription>
           </CardHeader>
@@ -144,6 +137,11 @@ export default async function ArticlesPage() {
                 ))}
               </TableBody>
             </Table>
+            <PagePagination
+              page={result.page}
+              pageCount={result.pageCount}
+              basePath="/dashboard/medicine-impact/articles"
+            />
           </CardContent>
         </Card>
       )}

@@ -16,8 +16,11 @@ function decodeEntities(text) {
 // HTML/RSS fragment -> plain text.
 function cleanText(value) {
   if (!value) return null;
+  let raw = String(value);
+  // Some feeds escape their HTML (&lt;p&gt;...): unescape before removing tags.
+  if (/&lt;\/?[a-z]/i.test(raw)) raw = decodeEntities(raw);
   const text = decodeEntities(
-    String(value)
+    raw
       .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
       .replace(/<(script|style)[\s\S]*?<\/\1>/gi, " ")
       .replace(/<\/(p|div|li|h[1-6])>|<br\s*\/?>/gi, "\n")
@@ -66,8 +69,11 @@ const HEALTH_KEYWORDS = {
   en: [
     "dengue", "outbreak", "epidemic", "pandemic", "disease", "diseases", "virus",
     "infection", "infections", "fever", "health", "hospital", "hospitals",
-    "medicine", "medicines", "medical", "drug", "drugs", "pharmacy",
+    "medicine", "medicines", "medical", "pharmacy",
     "pharmaceutical", "pharmaceuticals", "vaccine", "vaccination", "cholera",
+    // Not bare "drug(s)": in Sri Lankan news that is mostly narcotics seizures.
+    "drug shortage", "drug shortages", "drug prices", "essential drugs",
+    "medical supplies", "NMRA",
     "leptospirosis", "influenza", "flu", "covid", "malaria", "chikungunya",
     "patients", "flood", "floods", "flooding", "landslide", "landslides",
     "disaster", "drought", "cyclone", "MOH",
@@ -96,9 +102,28 @@ async function fetchWithTimeout(url, { timeoutMs = 30000, ...options } = {}) {
     throw new Error(`Request to ${new URL(url).host} failed: ${reason}`);
   });
   if (!response.ok) {
-    throw new Error(`Request to ${new URL(url).host}${new URL(url).pathname} returned HTTP ${response.status}`);
+    // Include the API's own error message (e.g. "apiKeyInvalid") when it sends one.
+    const detail = await response
+      .json()
+      .then((body) => [body?.code, body?.message].filter(Boolean).join(": "))
+      .catch(() => "");
+    throw new Error(
+      `Request to ${new URL(url).host}${new URL(url).pathname} returned HTTP ${response.status}` +
+        (detail ? ` (${detail.slice(0, 200)})` : "")
+    );
   }
   return response;
 }
 
-module.exports = { cleanText, normalizeUrl, toIsoDate, matchesHealthTopic, fetchWithTimeout };
+// Thrown when a source can't run because it isn't configured (e.g. missing key).
+// The collector reports it as "skipped" instead of "failed".
+class SourceNotConfigured extends Error {}
+
+module.exports = {
+  cleanText,
+  normalizeUrl,
+  toIsoDate,
+  matchesHealthTopic,
+  fetchWithTimeout,
+  SourceNotConfigured,
+};

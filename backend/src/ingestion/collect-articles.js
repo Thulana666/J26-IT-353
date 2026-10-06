@@ -2,14 +2,29 @@
 // No NLP, event creation or relevance scoring happens here.
 
 const who = require("./sources/who");
+const reliefweb = require("./sources/reliefweb");
+const gdacs = require("./sources/gdacs");
+const newsApi = require("./sources/newsapi");
+const healthMinistry = require("./sources/health-ministry");
 const dailyMirror = require("./sources/daily-mirror");
-const sriLankaNewsApi = require("./sources/sri-lanka-news-api");
+const dailyNews = require("./sources/daily-news");
+const sundayObserver = require("./sources/sunday-observer");
+const { findCountryCode } = require("./countries");
+const { SourceNotConfigured } = require("./normalize");
 
+// Keys are used on the command line: npm run collect:articles -- gdacs who
 const SOURCES = {
   who,
+  reliefweb,
+  gdacs,
+  newsapi: newsApi,
+  "health-ministry": healthMinistry,
   "daily-mirror": dailyMirror,
-  "sri-lanka-news-api": sriLankaNewsApi,
+  "daily-news": dailyNews,
+  "sunday-observer": sundayObserver,
 };
+
+const INSERT_BATCH_SIZE = 200;
 
 // One data_sources row per external source, looked up by its unique name.
 async function getOrCreateSource(supabase, definition) {
@@ -36,18 +51,24 @@ async function saveArticles(supabase, sourceId, articles, collectedAt) {
   const byUrl = new Map(articles.map((article) => [article.url, article]));
   const rows = [...byUrl.values()].map((article) => ({
     ...article,
+    // A country named in the title wins; otherwise keep the source's default
+    // (e.g. LK for Sri Lankan publishers), or null if there is none.
+    country_code: findCountryCode(article.title) ?? article.country_code,
     data_source_id: sourceId,
     fetched_at: collectedAt,
     processing_status: "pending",
   }));
-  if (rows.length === 0) return { inserted: 0, existing: 0 };
-
-  const { data, error } = await supabase
-    .from("event_articles")
-    .upsert(rows, { onConflict: "url", ignoreDuplicates: true })
-    .select("id");
-  if (error) throw new Error(`Could not save articles: ${error.message}`);
-  return { inserted: data.length, existing: rows.length - data.length };
+  let inserted = 0;
+  // Batches keep each request small (ReliefWeb can return 1000 reports).
+  for (let i = 0; i < rows.length; i += INSERT_BATCH_SIZE) {
+    const { data, error } = await supabase
+      .from("event_articles")
+      .upsert(rows.slice(i, i + INSERT_BATCH_SIZE), { onConflict: "url", ignoreDuplicates: true })
+      .select("id");
+    if (error) throw new Error(`Could not save articles: ${error.message}`);
+    inserted += data.length;
+  }
+  return { inserted, existing: rows.length - inserted };
 }
 
 async function collectArticles(supabase, { only } = {}) {
@@ -77,7 +98,7 @@ async function collectArticles(supabase, { only } = {}) {
         if (warnings?.length) result.warnings = warnings;
       }
     } catch (error) {
-      result.status = "failed";
+      result.status = error instanceof SourceNotConfigured ? "skipped" : "failed";
       result.error = error.message;
     }
     result.seconds = Math.round((Date.now() - started) / 100) / 10;
