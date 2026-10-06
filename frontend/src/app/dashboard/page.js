@@ -41,7 +41,7 @@ export default async function DashboardPage() {
         <StatCard label="Status" value={<span className="capitalize">{profile?.status ?? "active"}</span>} icon={CircleCheckIcon} />
         <StatCard
           label="Member since"
-          value={formatDate(profile?.created_at ?? user.created_at)}
+          value={profile?.created_at ? formatDate(profile.created_at) : "—"}
           icon={CalendarDaysIcon}
         />
       </div>
