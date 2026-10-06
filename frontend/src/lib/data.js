@@ -19,7 +19,7 @@ export async function getArticles() {
   const { data, error } = await supabase
     .from("event_articles")
     .select(
-      `id, title, url, country_code, processing_status, published_at, fetched_at,
+      `id, title, url, country_code, language, processing_status, published_at, fetched_at,
        source:data_sources (name, source_type, country_code),
        event:events (title)`
     )
@@ -39,6 +39,7 @@ export async function getArticles() {
     sourceType: row.source?.source_type,
     // The article's own country, falling back to the source's country.
     countryCode: row.country_code ?? row.source?.country_code ?? null,
+    language: row.language,
     processingStatus: row.processing_status,
     publishedAt: row.published_at,
     fetchedAt: row.fetched_at,

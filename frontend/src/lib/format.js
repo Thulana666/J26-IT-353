@@ -18,6 +18,18 @@ export function formatCountry(code) {
   }
 }
 
+const languageNames = new Intl.DisplayNames(["en"], { type: "language" });
+
+// ISO language code -> name, e.g. "si" -> "Sinhala".
+export function formatLanguage(code) {
+  if (!code) return null;
+  try {
+    return languageNames.of(code.trim());
+  } catch {
+    return code;
+  }
+}
+
 export function formatNumber(value) {
   return new Intl.NumberFormat("en-US").format(value);
 }

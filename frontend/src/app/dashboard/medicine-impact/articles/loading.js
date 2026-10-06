@@ -23,6 +23,7 @@ export default function ArticlesLoading() {
               <Skeleton className="h-4 flex-[1.5]" />
               <Skeleton className="h-4 flex-1" />
               <Skeleton className="h-4 flex-1" />
+              <Skeleton className="h-4 flex-1" />
               <Skeleton className="h-5 w-20 rounded-full" />
             </div>
           ))}
