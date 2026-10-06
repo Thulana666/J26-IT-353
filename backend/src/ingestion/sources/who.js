@@ -5,7 +5,8 @@ const { cleanText, fetchWithTimeout, toIsoDate } = require("../normalize");
 
 const API_URL = "https://www.who.int/api/news/diseaseoutbreaknews";
 const ITEM_URL = "https://www.who.int/emergencies/disease-outbreak-news/item/";
-const MAX_ITEMS = 30;
+// Latest reports per run (WHO publishes a few per month); 100 covers ~2 years.
+const MAX_ITEMS = 100;
 
 const source = {
   name: "WHO Disease Outbreak News",

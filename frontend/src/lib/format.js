@@ -8,11 +8,16 @@ export function formatDate(value) {
 
 const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
 
+// Friendlier names where the built-in ones are awkward (e.g. "Congo - Kinshasa").
+const COUNTRY_NAME_OVERRIDES = { CD: "DR Congo", CG: "Congo" };
+
 // ISO country code -> name, e.g. "LK" -> "Sri Lanka".
 export function formatCountry(code) {
   if (!code) return null;
+  const upper = code.trim().toUpperCase();
+  if (COUNTRY_NAME_OVERRIDES[upper]) return COUNTRY_NAME_OVERRIDES[upper];
   try {
-    return regionNames.of(code.trim().toUpperCase());
+    return regionNames.of(upper);
   } catch {
     return code;
   }
