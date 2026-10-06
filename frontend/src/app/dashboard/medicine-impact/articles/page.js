@@ -1,5 +1,6 @@
+import { unstable_rethrow } from "next/navigation";
 import { ARTICLE_LIMIT, getArticles } from "@/lib/data";
-import { formatCountry, formatDate } from "@/lib/format";
+import { formatCountry, formatDate, formatLanguage } from "@/lib/format";
 import { getNavItem } from "@/lib/navigation";
 import { AnimatedIcon } from "@/components/icons/animated-icon";
 import { BadgeAlertIcon } from "@/components/icons/badge-alert";
@@ -43,6 +44,8 @@ export default async function ArticlesPage() {
   try {
     articles = await getArticles();
   } catch (error) {
+    // Let Next.js handle its own control-flow errors (redirects, dynamic rendering).
+    unstable_rethrow(error);
     console.error(error);
     loadError = error.message;
   }
@@ -76,6 +79,7 @@ export default async function ArticlesPage() {
                   <TableHead>Article</TableHead>
                   <TableHead>Source</TableHead>
                   <TableHead>Country</TableHead>
+                  <TableHead>Language</TableHead>
                   <TableHead>Published</TableHead>
                   <TableHead>Status</TableHead>
                 </TableRow>
@@ -111,6 +115,7 @@ export default async function ArticlesPage() {
                       )}
                     </TableCell>
                     <TableCell>{formatCountry(article.countryCode) ?? "—"}</TableCell>
+                    <TableCell>{formatLanguage(article.language) ?? "—"}</TableCell>
                     <TableCell className="tabular-nums">
                       {article.publishedAt ? formatDate(article.publishedAt) : "—"}
                     </TableCell>

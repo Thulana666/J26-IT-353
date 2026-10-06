@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { unstable_rethrow } from "next/navigation";
 import { AnimatedIcon } from "@/components/icons/animated-icon";
 import { ArrowRightIcon } from "@/components/icons/arrow-right";
 import { EarthIcon } from "@/components/icons/earth";
@@ -40,6 +41,7 @@ export default async function MedicineImpactOverviewPage() {
     getEvents(),
     // The Articles page shows load errors; here a failure just counts as 0.
     getArticles().catch((error) => {
+      unstable_rethrow(error);
       console.error(error);
       return [];
     }),
