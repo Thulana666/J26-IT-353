@@ -38,17 +38,32 @@ export const metadata = {
   title: `${page.title} | PharmaTwin`,
 };
 
+// Several reports can share a title (e.g. WHO updates on the same outbreak).
+// Show only the newest of each; the database keeps them all for event analysis.
+function latestPerTitle(articles) {
+  const seen = new Set();
+  return articles.filter((article) => {
+    const key = article.title.trim().toLowerCase().replace(/\s+/g, " ");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 export default async function ArticlesPage() {
-  let articles = [];
+  let allArticles = [];
   let loadError = null;
   try {
-    articles = await getArticles();
+    allArticles = await getArticles();
   } catch (error) {
     // Let Next.js handle its own control-flow errors (redirects, dynamic rendering).
     unstable_rethrow(error);
     console.error(error);
     loadError = error.message;
   }
+  // getArticles() returns newest first, so the first of each title is the latest.
+  const articles = latestPerTitle(allArticles);
+  const hiddenCount = allArticles.length - articles.length;
 
   return (
     <>
@@ -67,9 +82,12 @@ export default async function ArticlesPage() {
           <CardHeader>
             <CardTitle>Collected articles</CardTitle>
             <CardDescription>
-              {articles.length === ARTICLE_LIMIT
-                ? `Showing the ${ARTICLE_LIMIT} most recent articles.`
-                : `${articles.length} article${articles.length === 1 ? "" : "s"}, newest first.`}
+              {allArticles.length === ARTICLE_LIMIT
+                ? `From the ${ARTICLE_LIMIT} most recent articles`
+                : `${articles.length} article${articles.length === 1 ? "" : "s"}, newest first`}
+              {hiddenCount > 0 &&
+                ` (${hiddenCount} older report${hiddenCount === 1 ? "" : "s"} with the same title hidden)`}
+              .
             </CardDescription>
           </CardHeader>
           <CardContent>
