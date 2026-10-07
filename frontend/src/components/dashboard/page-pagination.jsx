@@ -22,9 +22,15 @@ function pageNumbers(page, pageCount) {
 }
 
 // Link-based pagination: ?page=N on the given path (page 1 has no parameter).
-export function PagePagination({ page, pageCount, basePath }) {
+// `params` (optional) are kept on every link, e.g. active filters.
+export function PagePagination({ page, pageCount, basePath, params }) {
   if (pageCount <= 1) return null;
-  const href = (n) => (n <= 1 ? basePath : `${basePath}?page=${n}`);
+  const href = (n) => {
+    const query = new URLSearchParams(params);
+    if (n > 1) query.set("page", String(n));
+    const search = query.toString();
+    return search ? `${basePath}?${search}` : basePath;
+  };
 
   return (
     <Pagination className="mt-4">

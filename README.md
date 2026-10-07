@@ -81,3 +81,11 @@ others; a source without its key is reported as skipped. Set
 `data_sources.is_active = false` to pause a source. Daily Mirror's robots.txt
 asks for at most one request per hour, and ReliefWeb's robots.txt disallows
 automated RSS access (hence its API is used).
+
+## Warehouse FEFO & QR (Component 3)
+
+FEFO inventory, QR batch labels/scanning, movement history and storage-location
+recommendations, under **Warehouse** in the sidebar. Apply
+`supabase/migrations/20261008000000_create_warehouse_schema.sql`, run the
+backend and the Python service in `ai-service/`. Architecture, API, database,
+FEFO/QR/allocation logic and setup: [docs/component-3-warehouse.md](docs/component-3-warehouse.md).

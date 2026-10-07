@@ -4,6 +4,7 @@ require("dotenv").config();
 
 const supabase = require("./src/config/supabase");
 const ingestionRoutes = require("./src/ingestion/routes");
+const { medicinesRouter, warehouseRouter } = require("./src/warehouse");
 
 const app = express();
 
@@ -46,6 +47,10 @@ app.get("/api/health", async (req, res) => {
 
 // Component 1: article ingestion trigger (see src/ingestion/routes.js).
 app.use("/api/ingestion", ingestionRoutes);
+
+// Component 3: warehouse FEFO, QR and spatial allocation (see src/warehouse/).
+app.use("/api/medicines", medicinesRouter);
+app.use("/api/warehouse", warehouseRouter);
 
 const PORT = process.env.PORT || 5000;
 
