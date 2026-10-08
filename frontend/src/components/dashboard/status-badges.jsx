@@ -14,9 +14,15 @@ const LEVEL_STYLES = {
 };
 
 const STATUS_STYLES = {
+  // Events
   active: "bg-red-500/15 text-red-400",
   monitoring: "bg-sky-500/15 text-sky-400",
   resolved: "bg-muted text-muted-foreground",
+  // Article processing (NLP pipeline)
+  pending: "bg-muted text-muted-foreground",
+  processing: "bg-sky-500/15 text-sky-400",
+  processed: "bg-emerald-500/15 text-emerald-400",
+  failed: "bg-red-500/15 text-red-400",
 };
 
 // Severity / impact / relevance levels: critical, high, medium, low.

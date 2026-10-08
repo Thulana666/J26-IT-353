@@ -1,11 +1,12 @@
 import Link from "next/link";
+import { unstable_rethrow } from "next/navigation";
 import { AnimatedIcon } from "@/components/icons/animated-icon";
 import { ArrowRightIcon } from "@/components/icons/arrow-right";
 import { EarthIcon } from "@/components/icons/earth";
 import { FileTextIcon } from "@/components/icons/file-text";
 import { SyringeIcon } from "@/components/icons/syringe";
 import { TrendingUpIcon } from "@/components/icons/trending-up";
-import { getArticles, getEvents, getMedicineImpacts, getForecasts } from "@/lib/data";
+import { getArticleStats, getEvents, getMedicineImpacts, getForecasts } from "@/lib/data";
 import { formatDate } from "@/lib/format";
 import { getNavItem } from "@/lib/navigation";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -36,9 +37,14 @@ export const metadata = {
 };
 
 export default async function MedicineImpactOverviewPage() {
-  const [events, articles, impacts, forecasts] = await Promise.all([
+  const [events, articleStats, impacts, forecasts] = await Promise.all([
     getEvents(),
-    getArticles(),
+    // The Articles page shows load errors; here a failure just counts as 0.
+    getArticleStats().catch((error) => {
+      unstable_rethrow(error);
+      console.error(error);
+      return { stored: 0, sourceCount: 0 };
+    }),
     getMedicineImpacts(),
     getForecasts(),
   ]);
@@ -59,8 +65,8 @@ export default async function MedicineImpactOverviewPage() {
         />
         <StatCard
           label="Articles tracked"
-          value={articles.length}
-          hint={`From ${new Set(articles.map((a) => a.source)).size} sources`}
+          value={articleStats.stored}
+          hint={`From ${articleStats.sourceCount} sources`}
           icon={FileTextIcon}
         />
         <StatCard

@@ -6,6 +6,19 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["--use-system-ca", "frontend/node_modules/next/dist/bin/next", "dev", "frontend"],
       "port": 3000
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--use-system-ca", "--env-file=backend/.env", "backend/server.js"],
+      "port": 5000,
+      "autoPort": true
+    },
+    {
+      "name": "ai-service",
+      "runtimeExecutable": "ai-service/.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--app-dir", "ai-service", "--port", "8000"],
+      "port": 8000
     }
   ]
 }

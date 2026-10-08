@@ -4,9 +4,11 @@
   "description": "PharmaTwin Intelligent Warehouse Backend API",
   "main": "server.js",
   "scripts": {
-    "dev": "nodemon server.js",
-    "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon --exec \"node --use-system-ca\" server.js",
+    "start": "node --use-system-ca server.js",
+    "collect:articles": "node --use-system-ca scripts/collect-articles.js",
+    "backfill:countries": "node --use-system-ca scripts/backfill-article-countries.js",
+    "test": "node --test"
   },
   "keywords": [
     "pharmatwin",
@@ -23,7 +25,8 @@
     "@supabase/supabase-js": "^2.117.2",
     "cors": "^2.8.6",
     "dotenv": "^18.0.5",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
