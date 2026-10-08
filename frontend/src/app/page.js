@@ -1,66 +1,52 @@
-import Image from "next/image";
-import styles from "./page.module.css";
+import Link from "next/link";
+import { Brand } from "@/components/brand";
+import { Button } from "@/components/ui/button";
 
+// Temporary landing page with links to sign in and sign up.
 export default function Home() {
   return (
-    <div className={styles.page}>
-      <main className={styles.main}>
-        <Image
-          className={styles.logo}
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className={styles.intro}>
-          <h1>To get started, edit the page.js file.</h1>
-          <p>
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="flex min-h-svh flex-col bg-muted/40">
+      <header className="border-b bg-background">
+        <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4 sm:px-6">
+          <Brand />
+          <nav className="flex items-center gap-2">
+            <Button variant="ghost" nativeButton={false} render={<Link href="/login" />}>
+              Sign in
+            </Button>
+            <Button nativeButton={false} render={<Link href="/signup" />}>
+              Sign up
+            </Button>
+          </nav>
         </div>
-        <div className={styles.ctas}>
-          <a
-            className={styles.primary}
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+      </header>
+
+      <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-6 px-4 py-16 text-center sm:px-6">
+        <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
+          Welcome to PharmaTwin
+        </h1>
+        <p className="max-w-xl text-lg text-muted-foreground">
+          Sign in to your account to access the dashboard, or create a new
+          account to get started.
+        </p>
+        <div className="flex flex-wrap justify-center gap-3">
+          <Button size="lg" className="px-5" nativeButton={false} render={<Link href="/signup" />}>
+            Create an account
+          </Button>
+          <Button
+            size="lg"
+            variant="outline"
+            className="px-5"
+            nativeButton={false}
+            render={<Link href="/login" />}
           >
-            <Image
-              className={styles.logo}
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className={styles.secondary}
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            Sign in
+          </Button>
         </div>
       </main>
+
+      <footer className="py-6 text-center text-sm text-muted-foreground">
+        © {new Date().getFullYear()} PharmaTwin
+      </footer>
     </div>
   );
 }
