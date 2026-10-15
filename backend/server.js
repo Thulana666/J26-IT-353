@@ -5,6 +5,7 @@ require("dotenv").config();
 const supabase = require("./src/config/supabase");
 const ingestionRoutes = require("./src/ingestion/routes");
 const { medicinesRouter, warehouseRouter } = require("./src/warehouse");
+const { pharmacyRouter } = require("./src/pharmacy");
 
 const app = express();
 
@@ -51,6 +52,9 @@ app.use("/api/ingestion", ingestionRoutes);
 // Component 3: warehouse FEFO, QR and spatial allocation (see src/warehouse/).
 app.use("/api/medicines", medicinesRouter);
 app.use("/api/warehouse", warehouseRouter);
+
+// Component 4: pharmacy orders, shipments, POS, returns and inventory.
+app.use("/api/pharmacy", pharmacyRouter);
 
 const PORT = process.env.PORT || 5000;
 
