@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, Settings, ShoppingCart } from "lucide-react";
+import { Bell, Cpu, Play, Settings, ShoppingCart, Thermometer } from "lucide-react";
 import { ActivityIcon } from "@/components/icons/activity";
 import { BadgeAlertIcon } from "@/components/icons/badge-alert";
 import { CalendarDaysIcon } from "@/components/icons/calendar-days";
@@ -43,6 +43,9 @@ const STATIC_ICONS = {
   "bell": Bell,
   "settings": Settings,
   "shopping-cart": ShoppingCart,
+  "thermometer": Thermometer,
+  "play": Play,
+  "cpu": Cpu,
 };
 
 export function NavIcon({ name, ...props }) {

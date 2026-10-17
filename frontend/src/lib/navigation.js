@@ -1,4 +1,8 @@
 const PHARMACY_ROLES = ["admin", "pharmacy_staff"];
+// Cold-chain shipments are warehouse -> pharmacy deliveries: both sides see them.
+// The warehouse side starts monitoring and manages the sensor devices.
+const COLD_CHAIN_ROLES = ["admin", "warehouse_staff", "pharmacy_staff"];
+const COLD_CHAIN_MANAGER_ROLES = ["admin", "warehouse_staff"];
 
 // Sidebar navigation for the whole dashboard. Each system module is a
 // top-level entry; modules with several pages list them under `items`.
@@ -49,6 +53,35 @@ export const dashboardNav = [
         href: "/dashboard/medicine-impact/forecasts",
         icon: "trending-up",
         description: "Projected medicine demand for the coming weeks.",
+      },
+    ],
+  },
+  {
+    title: "Cold Chain",
+    href: "/dashboard/cold-chain",
+    icon: "thermometer",
+    description: "IoT temperature, humidity and GPS tracking of shipments in transit, with alerts and risk prediction.",
+    items: [
+      {
+        title: "Shipments",
+        href: "/dashboard/cold-chain",
+        icon: "thermometer",
+        roles: COLD_CHAIN_ROLES,
+        description: "Monitored shipments: current conditions, connection, delivery, alerts and predicted risk.",
+      },
+      {
+        title: "Start monitoring",
+        href: "/dashboard/cold-chain/start",
+        icon: "play",
+        roles: COLD_CHAIN_MANAGER_ROLES,
+        description: "Assign a sensor device to a shipment in transit and set its limits.",
+      },
+      {
+        title: "Devices",
+        href: "/dashboard/cold-chain/devices",
+        icon: "cpu",
+        roles: COLD_CHAIN_MANAGER_ROLES,
+        description: "ESP32 loggers and simulators: registration, keys and status.",
       },
     ],
   },
