@@ -9,9 +9,16 @@
     },
     {
       "name": "backend",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["--prefix", "backend", "run", "start"],
-      "port": 5000
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--use-system-ca", "--env-file=backend/.env", "backend/server.js"],
+      "port": 5000,
+      "autoPort": true
+    },
+    {
+      "name": "ai-service",
+      "runtimeExecutable": "ai-service/.venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "main:app", "--app-dir", "ai-service", "--port", "8000"],
+      "port": 8000
     }
   ]
 }

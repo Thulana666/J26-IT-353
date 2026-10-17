@@ -7,6 +7,7 @@ import { ShieldCheckIcon } from "@/components/icons/shield-check";
 import { requireUser } from "@/lib/auth";
 import { formatDate } from "@/lib/format";
 import { dashboardNav } from "@/lib/navigation";
+import { NavIcon } from "@/components/dashboard/nav-icon";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { StatCard } from "@/components/dashboard/stat-card";
 import {
@@ -59,7 +60,7 @@ export default async function DashboardPage() {
               className="group flex items-start gap-3 rounded-lg border p-4 transition-colors hover:bg-muted/50"
             >
               <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-                <AnimatedIcon icon={module.icon} />
+                <NavIcon name={module.icon} />
               </span>
               <span className="flex-1 space-y-1">
                 <span className="flex items-center gap-1 font-medium">
