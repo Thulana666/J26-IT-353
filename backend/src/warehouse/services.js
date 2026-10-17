@@ -9,6 +9,7 @@ const { classifyExpiry, thresholdsOf, widestThresholds, EXPIRY_STATUSES } = requ
 const { checkDispatchCompliance, dispatchIneligibility } = require("./fefo");
 const { generateCode, buildPayload, formatCode } = require("./qr");
 const { toBatch, toMedicine, toMovement, toQrCode, toWarehouse } = require("./mappers");
+const { ORDER_STAGES, orderStage } = require("./fulfilment");
 
 const { supabase } = store;
 
@@ -247,9 +248,17 @@ async function getSummary({ warehouseId } = {}, today) {
   });
 
   const quarantine = items.filter((item) => needsQuarantine(item, today));
+  const [orders, flow] = await Promise.all([getOrderPipeline({ warehouseId }), getStockFlow({ warehouseId })]);
   return {
     today,
     warehouses: [...warehouses.values()].filter((w) => !warehouseId || w.id === warehouseId).map(toWarehouse),
+    orders,
+    flow: {
+      // Packs in warehouse locations, of which reserved for orders.
+      warehouseUnits: sum(items, (item) => item.quantity),
+      reservedUnits: sum(items, (item) => item.quantityReserved),
+      ...flow,
+    },
     totals: {
       units: sum(items, (item) => item.quantity),
       stockRecords: items.length,
@@ -272,6 +281,48 @@ async function getSummary({ warehouseId } = {}, today) {
       batches: new Set(quarantine.map((item) => item.batchId)).size,
       units: sum(quarantine, (item) => item.quantity),
     },
+  };
+}
+
+// Pharmacy orders by warehouse stage (see fulfilment.js), for the dashboard.
+async function getOrderPipeline({ warehouseId } = {}) {
+  const orders = await store.fetchAll(() => {
+    let query = supabase.from("purchase_orders").select("id, status, shipment:shipments(status)").order("id");
+    if (warehouseId) query = query.eq("warehouse_id", warehouseId);
+    return query;
+  });
+  const live = await store.fetchAll(() =>
+    supabase.from("warehouse_order_fulfilments").select("order_id, status").neq("status", "cancelled").order("id")
+  );
+  const byOrder = new Map(live.map((row) => [row.order_id, row]));
+  const counts = Object.fromEntries(ORDER_STAGES.map((stage) => [stage, 0]));
+  for (const order of orders) {
+    const shipment = Array.isArray(order.shipment) ? order.shipment[0] : order.shipment;
+    counts[orderStage(order, byOrder.get(order.id), shipment)] += 1;
+  }
+  return counts;
+}
+
+// Packs that left the warehouse: still in transit, and confirmed received by
+// pharmacies (Component 4 records quantity_accepted at receipt).
+async function getStockFlow({ warehouseId } = {}) {
+  const shipments = await store.fetchAll(() => {
+    let query = supabase
+      .from("shipments")
+      .select("id, status, items:shipment_items(quantity_shipped, quantity_accepted)")
+      .order("id");
+    if (warehouseId) query = query.eq("warehouse_id", warehouseId);
+    return query;
+  });
+  const inTransit = shipments.filter((s) => s.status === "in_transit");
+  const received = shipments.filter((s) => s.status !== "in_transit");
+  return {
+    inTransitShipments: inTransit.length,
+    inTransitUnits: sum(inTransit.flatMap((s) => s.items), (item) => item.quantity_shipped),
+    confirmedShipments: received.length,
+    confirmedUnits: sum(received.flatMap((s) => s.items), (item) => item.quantity_accepted ?? 0),
+    // Shipped but not accepted (open or settled discrepancies).
+    notAcceptedUnits: sum(received.flatMap((s) => s.items), (item) => item.quantity_shipped - (item.quantity_accepted ?? 0)),
   };
 }
 
