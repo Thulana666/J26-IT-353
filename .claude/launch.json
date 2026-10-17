@@ -8,9 +8,22 @@
       "port": 3000
     },
     {
+      "name": "frontend-node22",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["frontend/node_modules/next/dist/bin/next", "dev", "frontend"],
+      "port": 3000
+    },
+    {
       "name": "backend",
       "runtimeExecutable": "node",
       "runtimeArgs": ["--use-system-ca", "--env-file=backend/.env", "backend/server.js"],
+      "port": 5000,
+      "autoPort": true
+    },
+    {
+      "name": "backend-node22",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--env-file=backend/.env", "backend/server.js"],
       "port": 5000,
       "autoPort": true
     },
