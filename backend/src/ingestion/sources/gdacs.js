@@ -83,4 +83,5 @@ async function collect() {
   return { fetched: features.length, articles };
 }
 
-module.exports = { source, collect };
+// Results are already limited to Sri Lanka, so the title country lookup is skipped.
+module.exports = { source, collect, countryFromApi: true };
