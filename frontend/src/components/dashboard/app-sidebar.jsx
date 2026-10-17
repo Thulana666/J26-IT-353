@@ -7,7 +7,8 @@ import { AnimatedIcon } from "@/components/icons/animated-icon";
 import { ChevronRightIcon } from "@/components/icons/chevron-right";
 import { MapPinIcon } from "@/components/icons/map-pin";
 import { SyringeIcon } from "@/components/icons/syringe";
-import { dashboardNav, isActivePath } from "@/lib/navigation";
+import { NavIcon } from "@/components/dashboard/nav-icon";
+import { isActivePath, visibleNav } from "@/lib/navigation";
 import {
   Collapsible,
   CollapsibleContent,
@@ -32,8 +33,11 @@ import {
   useSidebar,
 } from "@/components/ui/sidebar";
 
-export function AppSidebar() {
+// role: the signed-in user's role (null when inactive). It hides pages the
+// role cannot use; the backend still checks every request.
+export function AppSidebar({ role = null }) {
   const pathname = usePathname();
+  const nav = visibleNav(role);
   const { isMobile, setOpenMobile } = useSidebar();
 
   // Close the mobile drawer after choosing a page.
@@ -69,7 +73,7 @@ export function AppSidebar() {
           <SidebarGroupLabel>Platform</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {dashboardNav.map((item) =>
+              {nav.map((item) =>
                 item.items ? (
                   <NavSection
                     key={item.href}
@@ -84,7 +88,7 @@ export function AppSidebar() {
                       tooltip={item.title}
                       render={<Link href={item.href} onClick={handleNavigate} />}
                     >
-                      <AnimatedIcon icon={item.icon} />
+                      <NavIcon name={item.icon} />
                       <span>{item.title}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
@@ -133,7 +137,7 @@ function NavSection({ item, pathname, onNavigate }) {
         tooltip={item.title}
         render={<Link href={item.href} onClick={onNavigate} />}
       >
-        <AnimatedIcon icon={item.icon} />
+        <NavIcon name={item.icon} />
         <span>{item.title}</span>
       </SidebarMenuButton>
       <CollapsibleTrigger

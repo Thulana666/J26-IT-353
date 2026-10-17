@@ -17,7 +17,7 @@ export default async function DashboardLayout({ children }) {
   return (
     <TooltipProvider>
       <SidebarProvider defaultOpen={sidebarOpen}>
-        <AppSidebar />
+        <AppSidebar role={profile?.status === "active" ? profile.role : null} />
         <SidebarInset>
           <SiteHeader profile={profile} email={user.email} />
           <div className="flex flex-1 flex-col gap-6 p-4 sm:p-6">{children}</div>
