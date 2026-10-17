@@ -4,10 +4,10 @@
   "description": "PharmaTwin Intelligent Warehouse Backend API",
   "main": "server.js",
   "scripts": {
-    "dev": "nodemon --exec \"node --use-system-ca\" server.js",
-    "start": "node --use-system-ca server.js",
-    "collect:articles": "node --use-system-ca scripts/collect-articles.js",
-    "backfill:countries": "node --use-system-ca scripts/backfill-article-countries.js",
+    "dev": "nodemon server.js",
+    "start": "node server.js",
+    "collect:articles": "node scripts/collect-articles.js",
+    "backfill:countries": "node scripts/backfill-article-countries.js",
     "test": "node --test"
   },
   "keywords": [
@@ -26,9 +26,13 @@
     "cors": "^2.8.6",
     "dotenv": "^18.0.5",
     "express": "^5.2.1",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "@electric-sql/pglite": "^0.3.16",
+    "embedded-postgres": "^17.5.0-beta.15",
+    "nodemon": "^3.1.14",
+    "pg": "^8.23.1"
   }
 }

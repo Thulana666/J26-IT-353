@@ -1,5 +1,5 @@
-import { Button as ButtonPrimitive } from "@base-ui/react/button"
-import { cva } from "class-variance-authority";
+import * as React from "react"
+import { cva } from "class-variance-authority"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
@@ -43,14 +43,32 @@ function Button({
   className,
   variant = "default",
   size = "default",
+  render,
+  nativeButton = true,
+  children,
   ...props
 }) {
+  const classes = cn(buttonVariants({ variant, size, className }))
+
+  if (render && React.isValidElement(render)) {
+    return React.cloneElement(render, {
+      ...props,
+      ...render.props,
+      className: cn(classes, render.props.className),
+      children: children ?? render.props.children,
+      "data-slot": "button",
+    })
+  }
+
   return (
-    <ButtonPrimitive
+    <button
       data-slot="button"
-      className={cn(buttonVariants({ variant, size, className }))}
-      {...props} />
-  );
+      className={classes}
+      {...props}
+    >
+      {children}
+    </button>
+  )
 }
 
 export { Button, buttonVariants }
