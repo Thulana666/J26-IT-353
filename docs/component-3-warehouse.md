@@ -9,157 +9,226 @@ Browser ──► Next.js server (Server Components / Server Actions)
             Express  /api/medicines, /api/warehouse/*      (backend/src/warehouse)
               │  verifies the token, role checks, FEFO + QR rules
               ├──► Supabase PostgreSQL (service role)
-              │      stock changes only via record_inventory_movement()
-              └──► Python AI service  POST /warehouse/spatial/recommend   (ai-service/)
-                     stateless; receives the warehouse state, returns ranked locations
+              │      stock changes only via transactional functions
+              │      (record_inventory_movement, warehouse_allocate_order, ...)
+              ├──► Python AI service  POST /warehouse/spatial/recommend   (ai-service/)
+              │      stateless; receives the warehouse state, returns ranked locations
+              └──► Component 2 API    POST /api/cold-chain/shipments  (handoff at dispatch)
+
+Component 4 (pharmacy) ◄──► shared tables: purchase_orders, shipments, shipment_items,
+                            shipment_discrepancies, return_requests (its documented contract)
 ```
 
 - **FEFO** (First Expiry, First Out) and **QR** are deterministic rules in the
-  backend (`fefo.js`, `expiry.js`, `qr.js`). They are not AI.
+  backend and database. They are not AI.
 - **Spatial allocation** is the optimisation part: a modular Python service.
-- The browser never calls the backend; the Supabase secret key stays in
-  `backend/.env`.
+- The browser never calls the backend; the Supabase secret key stays in `backend/.env`.
 
 | Where | What |
 |---|---|
-| `supabase/migrations/20261008000000_create_warehouse_schema.sql` | tables, views, `record_inventory_movement()`, RLS |
+| `supabase/migrations/20261008000000_create_warehouse_schema.sql` | warehouse tables, views, `record_inventory_movement()`, RLS |
+| `supabase/migrations/20261008000001_grant_profiles_to_service_role.sql` | backend read access to `profiles` |
+| `supabase/migrations/20261018000000_warehouse_order_fulfilment.sql` | order fulfilment, reservations, integration outbox, scan history, stricter RLS |
+| `supabase/migrations/20261018000001_staff_warehouse_assignment.sql` | `profiles.warehouse_id` (warehouse of warehouse staff / admins) |
 | `supabase/seed/sample_warehouse.sql` | SAMPLE warehouse, stock and movements (optional) |
-| `backend/src/warehouse/` | API: `routes/`, rules (`fefo.js`, `expiry.js`, `qr.js`, `movements.js`), `services.js`, `store.js` |
-| `backend/test/warehouse/` | unit tests (`npm test`) |
-| `ai-service/warehouse/` | spatial allocation (`spatial.py` logic, `router.py` API) |
-| `ai-service/tests/` | unit tests |
+| `backend/src/warehouse/` | API `routes/`; rules `fefo.js`, `expiry.js`, `qr.js`, `movements.js`, `fulfilment.js`; `integrations/` (outbox, cold-chain adapter); `auth.js` (roles) |
+| `backend/test/warehouse/` | unit, HTTP access, PGlite database and embedded-PostgreSQL concurrency tests |
+| `ai-service/warehouse/` | spatial allocation (`spatial.py` logic, `schemas.py`, `router.py` API) |
 | `frontend/src/app/dashboard/warehouse/` | pages and server actions |
 | `frontend/src/components/warehouse/`, `frontend/src/lib/warehouse/` | UI components (CSS Modules), API client |
 
+## Roles
+
+`profiles.role` is shared with Components 2 and 4. Admins assign roles in
+**Warehouse → Staff** (`/api/warehouse/staff`), which also sets the assignment
+the role takes: a **pharmacy** for pharmacy staff, a **warehouse** for warehouse
+staff (required) and admins (optional, "all warehouses" when empty). The
+database clears the warehouse when a role without warehouse access is set
+anywhere (e.g. Pharmacy → Settings). The warehouse assignment is recorded and
+shown; it does not yet restrict which warehouse's data a staff member sees
+(with one warehouse this makes no difference).
+
+| Role | Warehouse |
+|---|---|
+| admin | everything, incl. configuration (warehouses, zones, racks, locations, medicines), stock corrections and disposals, batch status, FEFO thresholds, QR deactivation, staff access |
+| warehouse_staff | receive, move, pick, dispatch, QR scan, discrepancy reports, returns |
+| pharmacy_staff | none (reads the medicine catalogue only) |
+| user / inactive | none |
+
+The backend checks every request (`auth.js`); the sidebar hides pages a role cannot use.
+Operational warehouse tables are readable (RLS) by warehouse staff and admins only;
+`warehouses`, `medicines` and `batches` stay readable by signed-in users (shared).
+
 ## Database
 
-Shared tables (other components can reference them):
-
-- `medicines` – name, strength, form, `medicine_category_id` (Component 1's
-  `medicine_categories`), `storage_condition` (`ambient` / `cool` /
-  `refrigerated` / `frozen`), `is_controlled`.
-- `batches` – medicine, `batch_number`, manufacturing and `expiry_date`,
-  `status` (`active` / `quarantined` / `recalled` / `disposed`).
-  *Expired* and *depleted* are derived, not stored.
+Shared tables: `medicines` (storage condition, controlled flag) and `batches`
+(batch number, dates, status `active` / `quarantined` / `recalled` / `disposed`;
+*expired* and *depleted* are derived).
 
 Component 3 tables:
 
-- `warehouses` (FEFO thresholds `near_expiry_days`, `critical_expiry_days`;
-  optional `location_id` → shared `locations`) → `warehouse_zones` (zone type
-  `storage`/`quarantine`, storage condition, temperature range, `is_secure`)
-  → `warehouse_racks` (`distance_to_dispatch_m`) → `storage_locations`
-  (level, `capacity_units`, `accessibility`).
-- `warehouse_stock` – quantity of a batch at a location (a batch can span locations).
+- `warehouses` (FEFO thresholds) → `warehouse_zones` (`storage`/`quarantine`, storage
+  condition, temperature range, `is_secure`) → `warehouse_racks`
+  (`distance_to_dispatch_m`) → `storage_locations` (level, `capacity_units`, `accessibility`).
+- `warehouse_stock` – packs of a batch at a location.
 - `batch_qr_codes` – one active code per batch; old codes are deactivated, not deleted.
-- `inventory_movements` – append-only: `receive`, `transfer`, `dispatch`,
-  `adjustment`, `disposal`; who (`performed_by`), how (`manual` / `qr_scan` /
-  `system`), FEFO compliance and override reason.
+- `inventory_movements` – append-only `receive` / `transfer` / `dispatch` / `adjustment` /
+  `disposal`, with who, how (`manual` / `qr_scan` / `system`), FEFO compliance and an
+  optional `client_request_id` (idempotency key).
+- `warehouse_order_fulfilments` – warehouse progress of one pharmacy order.
+- `warehouse_order_picks` – FEFO allocation lines; `reserved` and `picked` lines hold stock.
+- `warehouse_integration_events` – outbox of handoffs to other components.
+- `warehouse_scan_events` – QR scan history (lookups, pick verification, rejections).
 
-Views (read models / digital-twin state): `storage_location_overview`
-(occupancy per location), `warehouse_stock_overview` (stock with batch,
-medicine and location), `inventory_movement_overview` (movement + warehouse).
+Views: `storage_location_overview`, `warehouse_stock_overview` (with
+`quantity_reserved`, `quantity_available`), `inventory_movement_overview`.
 
-Quantities and capacities use the same *storage units* (e.g. cartons).
+**Integrity.** All stock changes run in database functions that lock rows and
+check the rules in one transaction: no negative stock, no over-capacity, storage
+condition and secure-zone rules, quarantine rules, no cross-warehouse transfers,
+no receiving expired stock, no dispatching non-active or expired batches, and
+**reserved stock cannot be moved, disposed, dispatched loose or taken by another
+order** (including Component 4's `pharmacy_dispatch_order()`). Rows are locked in a
+fixed order to avoid deadlocks. Only the service role may call the functions.
 
-**Integrity.** `record_inventory_movement()` runs in one transaction, locks
-the batch, source stock and destination location, and rejects: insufficient
-stock, over-capacity, wrong storage condition, controlled medicine outside a
-secure zone, quarantined/recalled/expired stock outside quarantine (and active
-stock inside it), cross-warehouse transfers, receiving expired stock,
-dispatching non-active or expired batches. Only the service role may call it.
-Signed-in users can read all tables; only admins can write master data
-directly; stock and movements are read-only for users.
+## Pharmacy order fulfilment
 
-## API (backend, all routes need `Authorization: Bearer <Supabase access token>`)
+```
+Component 4:  submitted ───────────────────────────────────────► dispatched ──► received
+Component 3:  pending ─► allocated ─► picking ─► ready ─► dispatched
+                  │         └────────── cancelled (reservation released) ──┘
+                  └─ declined (order cancelled)
+```
 
-| Method & path | Who | Purpose |
+1. **Allocate** (`warehouse_allocate_order`): reserves stock for every item in FEFO
+   order – active batch, storage zone, active location, at least `minShelfDays`
+   (default 30) of shelf life; earliest expiry, then older manufacture, earlier
+   receipt, nearer dispatch. All or nothing; quantities may be reduced per item.
+   Skipping short-dated stock is recorded the same way as Component 4's dispatch
+   function. Repeating it returns the same allocation.
+2. **Pick** (`warehouse_confirm_pick`): at the shelf, staff scan the batch label (or
+   type the batch number) and the location label `PTWH:LOC:<id>` (or type the
+   location code). Wrong batch, wrong location, unknown or deactivated labels are
+   rejected and logged. When every pick is verified the order is **ready**.
+3. **Dispatch** (`warehouse_dispatch_fulfilment`): one transaction creates the
+   `shipments` / `shipment_items` rows Component 4 receives (picked batches, packs,
+   `units_per_pack`, prices copied), records one dispatch movement per pick that
+   consumes its reservation, sets the order to `dispatched` and queues the
+   cold-chain handoff. Repeating it returns the same shipment (no second deduction).
+4. **Cancel / decline**: releasing an allocation frees the stock; declining calls
+   Component 4's `pharmacy_cancel_order()`. A trigger releases reservations whenever
+   an order is cancelled (also by the pharmacy) or dispatched outside this workflow.
+5. **Receipt** is confirmed by the pharmacy in Component 4 (`pharmacy_confirm_receipt`);
+   the warehouse order page shows the shipment status, packs accepted per batch and
+   any discrepancy reports. Dashboard stock flow distinguishes **warehouse stock**
+   (incl. reserved), **in transit** (shipments not yet received) and **confirmed by
+   pharmacies** (`quantity_accepted`).
+
+Concurrency is tested on a real PostgreSQL server: competing allocations never
+over-reserve, parallel allocations/dispatches of one order produce one allocation
+and one shipment, a repeated movement request moves stock once.
+
+## Cross-component contracts
+
+| With | Contract (documented by the other component) | Used for |
 |---|---|---|
-| `GET /api/medicines` · `/categories` · `/:id` | user | medicines (`?q=&active=`) |
-| `POST /api/medicines` · `PATCH /:id` | admin | create / edit |
-| `GET /api/warehouse/warehouses` · `POST` · `PATCH /:id` | user · admin | warehouses, FEFO thresholds |
-| `GET /api/warehouse/storage` | user | zones → racks → locations with occupancy and contents |
-| `GET /api/warehouse/storage/locations` | user | flat list (`?warehouseId=&zoneType=&storageCondition=&activeOnly=&minAvailable=`) |
-| `POST /api/warehouse/storage/zones` · `/racks` · `/locations` · `PATCH /locations/:id` | admin | structure |
-| `GET /api/warehouse/batches` · `/:id` | user | batches; detail with stock, FEFO position, QR, movements |
-| `POST /api/warehouse/batches` | active user | register a batch (issues its QR code) |
-| `PATCH /api/warehouse/batches/:id` | admin | status: active / quarantined / recalled |
-| `GET /api/warehouse/inventory` · `/summary` | user | stock rows (FEFO order, filters) · dashboard figures |
-| `GET /api/warehouse/fefo/alerts` | user | expired / critical / near-expiry batches, stock needing quarantine |
-| `GET /api/warehouse/fefo/pick` | user | FEFO pick list (`?warehouseId=&medicineId=&quantity=`) |
-| `POST /api/warehouse/fefo/dispatch` | active user | dispatch following the pick list |
-| `GET /api/warehouse/fefo/compliance` | user | FEFO compliance rate and overrides (`?days=30`) |
-| `POST /api/warehouse/qr/resolve` | user | `{ payload }` → batch, stock, FEFO position |
-| `GET` · `POST /api/warehouse/qr/batch/:batchId` | user · active user | label image · issue a new label |
-| `POST /api/warehouse/qr/:id/deactivate` | admin | deactivate a code |
-| `GET /api/warehouse/movements` · `POST` | user · active user | history (`?batchId=&movementType=&warehouseId=&page=`) · record (adjustment/disposal: admin) |
-| `POST /api/warehouse/spatial/recommend` · `GET /status` | user | ranked locations · Python service reachable? |
-| `GET /api/warehouse/state` | user | full warehouse snapshot for the digital twin |
+| Component 4 | shared tables above; functions `pharmacy_cancel_order`, `pharmacy_update_discrepancy`, `pharmacy_review_return`, `pharmacy_receive_return`; `/api/pharmacy/admin/users` and `/pharmacies` | orders, dispatch into shipments, discrepancy acknowledge/resolve, return review/receipt (restock into a location), staff access |
+| Component 2 | `POST /api/cold-chain/shipments { shipmentId, expectedDeliveryAt? }` with the user's token | hand the shipment over to monitoring at dispatch (optional) |
+
+**Cold-chain handoff.** Sensor devices and monitoring limits belong to Component 2;
+the warehouse never assigns devices. Every dispatched shipment is in `shipments`
+(`in_transit`), where Component 2's Cold Chain → Start monitoring finds it. At
+dispatch staff may also tick "Hand over to cold-chain monitoring now": dispatch then
+writes a `pending` `warehouse_integration_events` row in the same transaction
+(otherwise `skipped`). The
+backend delivers it right after dispatch (`integrations/cold-chain.js`): network
+errors and 5xx answers are retried with backoff; `409 already monitored` counts as
+delivered (idempotent); other 4xx answers are final. Failures are recorded
+(attempts, last error) and can be retried from the order page
+(`POST /api/warehouse/integrations/:id/retry`). Delivery uses the user's session,
+so there is no background retry when nobody is signed in.
+
+Not covered (no contract exists yet): notifying Component 4 actively (it reads the
+shared tables and Realtime), and Component 2 → warehouse feedback.
+
+## API (backend; `Authorization: Bearer <Supabase access token>`)
+
+Warehouse staff unless marked *admin*.
+
+| Method & path | Purpose |
+|---|---|
+| `GET /api/medicines` · `/categories` · `/:id` | catalogue (any staff role) |
+| `POST /api/medicines` · `PATCH /:id` | *admin*: create / edit |
+| `GET /api/warehouse/warehouses` · `POST` · `PATCH /:id` | warehouses (*admin* writes) |
+| `GET /api/warehouse/storage` · `/locations` · `/locations/:id/label` | hierarchy with contents · flat list · location QR label |
+| `POST /api/warehouse/storage/zones` · `/racks` · `/locations`; `PATCH /zones/:id` · `/racks/:id` · `/locations/:id` | *admin*: structure |
+| `GET /api/warehouse/batches` · `/:id`; `POST /` | batches; register a batch (issues its QR) |
+| `PATCH /api/warehouse/batches/:id` | *admin*: status |
+| `GET /api/warehouse/inventory` · `/summary` | stock (FEFO order) · dashboard incl. orders and stock flow |
+| `GET /api/warehouse/fefo/alerts` · `/pick` · `/compliance`; `POST /dispatch` | FEFO alerts, pick list, compliance; loose FEFO dispatch (atomic, `clientRequestId`) |
+| `POST /api/warehouse/qr/resolve`; `GET`·`POST /qr/batch/:batchId`; `POST /qr/:id/deactivate` | lookup (logged) · label / new label · *admin* deactivate |
+| `GET` · `POST /api/warehouse/movements` | history · record (`clientRequestId`; adjustment/disposal *admin*) |
+| `GET /api/warehouse/orders` · `/:id` | orders by stage with counts · detail |
+| `POST /api/warehouse/orders/:id/allocate` · `/picks/:pickId/confirm` · `/cancel-allocation` · `/dispatch` · `/decline` | fulfilment |
+| `GET /api/warehouse/discrepancies`; `POST /:id/acknowledge` · `/:id/resolve` | pharmacy discrepancy reports |
+| `GET /api/warehouse/returns` · `/:id`; `POST /:id/review` · `/:id/receive` | returns |
+| `GET /api/warehouse/integrations`; `POST /:id/retry` | handoff outbox |
+| `GET /api/warehouse/scans` | scan history |
+| `GET /api/warehouse/staff`; `PATCH /:id` | *admin*: accounts; role, status and pharmacy / warehouse assignment |
+| `POST /api/warehouse/spatial/recommend` · `GET /status` | ranked locations · service reachable? |
+| `GET /api/warehouse/state` | warehouse snapshot for the digital twin |
 
 Errors are JSON `{ error, details? }`: 400 validation (`details.fields`), 401/403,
-404, 409 business rule (e.g. `details.code = "FEFO_VIOLATION"`), 410 inactive QR,
-503 spatial service down.
+404, 409 business rule or concurrent change, 410 inactive QR, 503 service down.
 
 ## FEFO logic
 
-- Expiry status: `expired` (expiry date before today; the expiry date itself is
-  usable), `critical` (≤ critical threshold, default 30 days), `near_expiry`
-  (≤ near threshold, default 90), `ok`. Thresholds are per warehouse (admins
-  edit them on the FEFO page). "Today" is the warehouse's local date
-  (`WAREHOUSE_TIME_ZONE`, default `Asia/Colombo`).
-- Eligible for outbound: active batch, not expired, in a storage zone, stock > 0.
-- Order: earliest expiry → older manufacturing date → earlier receipt (FIFO only
-  as a tie-break) → location nearer dispatch.
-- Dispatching a batch while an earlier-expiring eligible batch exists is refused
-  (409) unless an override reason is given; it is then recorded with
-  `fefo_compliant = false`. Same-day expiry counts as compliant. Compliance rate =
+- Expiry status: `expired` (before today), `critical` (≤ critical threshold, default
+  30 days), `near_expiry` (≤ near threshold, default 90), `ok`; thresholds per
+  warehouse; "today" in `WAREHOUSE_TIME_ZONE` (default `Asia/Colombo`).
+- Eligible for outbound: active batch, not expired, storage zone, unreserved stock.
+- Order: earliest expiry → older manufacture → earlier receipt (FIFO only as a
+  tie-break) → nearer dispatch.
+- Dispatching a later-expiring batch while an earlier eligible one exists needs an
+  override reason and is recorded as non-compliant; compliance rate =
   compliant / (compliant + overrides).
 
 ## QR workflow
 
-1. Registering a batch issues a code: 12 random Crockford base32 characters plus
-   a Luhn mod 32 check character. The QR image encodes only `PTWH:1:<code>`
-   (opaque; batch data is looked up, so labels never go stale).
-2. The batch page shows the label (SVG) and prints it.
-3. Scanning (camera via `BarcodeDetector` or jsQR, a handheld scanner, or typing)
-   calls `/qr/resolve`: invalid format or check character → 400, unknown → 404,
-   deactivated → 410 with a hint to use the newer label.
-4. The result shows locations and FEFO position, with transfer/dispatch forms
-   (movements are recorded with `performed_via = 'qr_scan'`).
-5. A damaged or lost label is replaced with "Issue new label"; the old code is
-   deactivated and kept for history.
+1. Registering a batch issues a code (12 random Crockford base32 characters + a Luhn
+   mod 32 check character). The QR encodes only `PTWH:1:<code>`; storage location
+   labels encode `PTWH:LOC:<location id>`. No secrets or batch data are encoded.
+2. Labels are shown and printed on the batch page (batch) and in Configuration (locations).
+3. Scanning (camera via `BarcodeDetector` or jsQR, handheld scanner, or typing):
+   lookups and pick verification validate format, check character, registration
+   and active status, and every attempt is stored in the scan history.
+4. A lost or damaged label is replaced; the old code is deactivated and kept.
 
 ## Spatial allocation (ai-service)
 
 Rule-based multi-criteria scoring – a transparent heuristic, not a trained model.
-
-1. Hard constraints (same as the database checks): active location, matching
-   storage condition, secure zone for controlled medicines, quarantine zone only
-   and always for quarantined/recalled/expired stock, enough free capacity.
-2. Factor scores in [0, 1], weighted (defaults):
-   - expiry ↔ accessibility match, 40% – urgency (1 at the critical threshold,
-     falling to 0 at 365 days) vs accessibility (shelf accessibility and
-     distance to dispatch): short-dated stock near dispatch, long-dated deeper;
-   - capacity fit, 25% – best fit, `quantity / free space`;
-   - consolidation, 25% – same batch / same medicine nearby, avoid mixing medicines;
-   - zone efficiency, 10% – keep secure storage for controlled medicines.
-3. Score = 100 × weighted sum; output has the recommendation, alternatives,
-   factor values, reasons and rejected locations with their reasons. Weights can
-   be passed per request; the module (`spatial.recommend`) can be replaced by
-   another allocator with the same input/output.
+Hard constraints (same as the database checks) remove unsuitable locations; the rest
+are scored on expiry ↔ accessibility match (40%), capacity fit (25%), consolidation
+(25%) and zone efficiency (10%), returned with factor values, reasons and rejected
+locations. Invalid input (e.g. all weights zero) is a 422. If the service is down,
+Receive & Allocate lists compatible locations nearest to dispatch, labelled
+"not optimised", so receiving continues.
 
 ## Setup and run
 
-1. Apply `supabase/migrations/20261008000000_create_warehouse_schema.sql` and
-   `20261008000001_grant_profiles_to_service_role.sql` in the Supabase SQL
-   editor (after the earlier migrations). Optionally run
-   `supabase/seed/sample_warehouse.sql` for SAMPLE data (it has a cleanup block).
-2. Backend (`backend/.env` as in the main README; optional
-   `SPATIAL_SERVICE_URL=http://localhost:8000`, `WAREHOUSE_TIME_ZONE=Asia/Colombo`):
-
-   ```bash
-   cd backend && npm install && npm run dev
-   ```
-3. AI service (Python 3.10+):
+1. In the Supabase SQL editor apply, after the earlier migrations,
+   `20261008000000_create_warehouse_schema.sql`,
+   `20261008000001_grant_profiles_to_service_role.sql` and (after the pharmacy and
+   cold-chain migrations) `20261018000000_warehouse_order_fulfilment.sql` and
+   `20261018000001_staff_warehouse_assignment.sql`. Do not
+   re-run `20261008000000` afterwards: it would re-create the old
+   `record_inventory_movement()` signature next to the new one.
+2. Assign roles in **Warehouse → Staff** (warehouse staff need `warehouse_staff`).
+3. Backend (`backend/.env`, see `backend/.env.example`; optional
+   `SPATIAL_SERVICE_URL=http://localhost:8000`, `WAREHOUSE_TIME_ZONE=Asia/Colombo`,
+   `COLD_CHAIN_API_URL` if Component 2 is not served by the same backend):
+   `cd backend && npm install && npm run dev`.
+4. AI service (Python 3.10+):
 
    ```bash
    cd ai-service
@@ -167,17 +236,23 @@ Rule-based multi-criteria scoring – a transparent heuristic, not a trained mod
    .venv\Scripts\pip install -r requirements.txt      # macOS/Linux: .venv/bin/pip
    .venv\Scripts\uvicorn main:app --port 8000
    ```
-4. Frontend: `cd frontend && npm install && npm run dev`, then open
-   **Warehouse** in the sidebar. `BACKEND_URL` in `frontend/.env.local` defaults
-   to `http://localhost:5000`.
+5. Frontend: `cd frontend && npm install && npm run dev` → **Warehouse** in the sidebar.
 
 Tests:
 
 ```bash
-cd backend && npm test
+cd backend && npm test            # includes PGlite and embedded-PostgreSQL tests
 cd ai-service && .venv\Scripts\python -m unittest discover tests
+cd frontend && npm run lint && npm run build
 ```
 
-Roles: signed-in users can view everything and scan; active users receive,
-transfer and dispatch; admins also adjust, dispose, change batch status, edit
-thresholds and master data.
+## Limitations
+
+- One shipment per order (Component 4's contract); short-dated stock is never sent
+  to pharmacies, so an order may need a reduced quantity.
+- A pick confirms the whole reserved quantity of one batch at one location; partial
+  picks need the allocation to be cancelled and re-made.
+- Batches larger than any free location must be split manually.
+- Cold-chain handoff retries need a signed-in user (no background worker).
+- A shipment handed over at dispatch is monitored without a sensor device until the
+  Cold Chain component assigns one (pending in Component 2).
