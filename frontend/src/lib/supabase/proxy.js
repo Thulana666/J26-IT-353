@@ -1,8 +1,11 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 
-const PUBLIC_ROUTES = ["/", "/login", "/signup"];
-const GUEST_ONLY_ROUTES = ["/login", "/signup"];
+const PUBLIC_ROUTES = ["/", "/login", "/signup", "/driver/login"];
+const GUEST_ONLY_ROUTES = ["/login", "/signup", "/driver/login"];
+
+// The Driver Portal (Component 2) has its own sign-in page and home.
+const isDriverPortal = (pathname) => pathname === "/driver" || pathname.startsWith("/driver/");
 
 function isPublicRoute(pathname) {
   return PUBLIC_ROUTES.some(
@@ -43,11 +46,11 @@ export async function updateSession(request) {
   const { pathname } = request.nextUrl;
 
   if (!isAuthenticated && !isPublicRoute(pathname)) {
-    return redirectTo(request, response, "/login");
+    return redirectTo(request, response, isDriverPortal(pathname) ? "/driver/login" : "/login");
   }
 
   if (isAuthenticated && GUEST_ONLY_ROUTES.includes(pathname)) {
-    return redirectTo(request, response, "/dashboard");
+    return redirectTo(request, response, isDriverPortal(pathname) ? "/driver/dashboard" : "/dashboard");
   }
 
   return response;

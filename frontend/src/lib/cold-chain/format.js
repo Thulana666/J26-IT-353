@@ -77,7 +77,7 @@ export const RISK_TYPES = {
   temperature_excursion: "Temperature excursion",
   humidity_deviation: "Humidity deviation",
   delivery_delay: "Delivery delay",
-  route_anomaly: "Route / logistics anomaly",
+  route_anomaly: "Route / logistics risk",
   communication_gap: "Communication gap",
   combined: "Combined cold-chain risk",
 };
@@ -86,4 +86,52 @@ export const QUALITY_FLAGS = {
   delayed_upload: ["Delayed upload", "Received more than 5 minutes (or 3 reading intervals) after it was recorded."],
   gps_jump: ["GPS jump", "The position moved implausibly fast since the previous fix; the value is stored as sent."],
   after_delivery: ["After delivery", "Recorded after the pharmacy received the shipment."],
+};
+
+// Trip workflow and fleet: [label, tone].
+export const TRIP_STATUS = {
+  ready_for_dispatch: ["Ready for dispatch", "blue"],
+  allocated: ["Allocated", "violet"],
+  in_transit: ["In transit", "amber"],
+  delivered: ["Delivered", "green"],
+};
+export const TRIP_STEPS = ["ready_for_dispatch", "allocated", "in_transit", "delivered"];
+
+export const DRIVER_STATUS = {
+  available: ["Available", "green"],
+  assigned: ["Assigned", "violet"],
+  on_trip: ["On trip", "amber"],
+  inactive: ["Inactive", "gray"],
+};
+export const TRUCK_STATUS = {
+  available: ["Available", "green"],
+  assigned: ["Assigned", "violet"],
+  in_use: ["In use", "amber"],
+  inactive: ["Inactive", "gray"],
+};
+export const TRUCK_TYPES = {
+  refrigerated_truck: "Refrigerated truck",
+  refrigerated_van: "Refrigerated van",
+  insulated_van: "Insulated van",
+  standard_truck: "Standard truck",
+  standard_van: "Standard van",
+};
+
+export { formatDate } from "@/lib/pharmacy/format";
+
+// Driver-reported issues.
+export const ISSUE_TYPES = {
+  vehicle: "Vehicle problem",
+  temperature: "Temperature problem",
+  gps: "GPS / location problem",
+  delay: "Delivery delay",
+  pharmacy_unavailable: "Pharmacy unavailable",
+  damaged: "Damaged package / order issue",
+  route: "Route problem",
+  other: "Other",
+};
+export const ISSUE_STATUS = {
+  open: ["Open", "red"],
+  in_review: ["In review", "amber"],
+  resolved: ["Resolved", "gray"],
 };

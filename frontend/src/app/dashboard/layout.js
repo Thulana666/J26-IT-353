@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { AppSidebar } from "@/components/dashboard/app-sidebar";
 import { SiteHeader } from "@/components/dashboard/site-header";
@@ -11,6 +12,8 @@ export const metadata = {
 
 export default async function DashboardLayout({ children }) {
   const { user, profile } = await requireUser();
+  // Drivers use the Driver Portal (Component 2), not the staff dashboard.
+  if (profile?.role === "driver") redirect("/driver/dashboard");
   // Remember whether the sidebar was collapsed (cookie set by SidebarProvider).
   const sidebarOpen = (await cookies()).get("sidebar_state")?.value !== "false";
 
