@@ -1,4 +1,10 @@
 const PHARMACY_ROLES = ["admin", "pharmacy_staff"];
+// Cold-chain shipments are warehouse -> pharmacy deliveries: both sides see them.
+// The warehouse side starts monitoring and manages the sensor devices.
+const COLD_CHAIN_ROLES = ["admin", "warehouse_staff", "pharmacy_staff"];
+const COLD_CHAIN_MANAGER_ROLES = ["admin", "warehouse_staff"];
+const WAREHOUSE_ROLES = ["admin", "warehouse_staff"];
+const ADMIN_ROLES = ["admin"];
 
 // Sidebar navigation for the whole dashboard. Each system module is a
 // top-level entry; modules with several pages list them under `items`.
@@ -53,52 +59,144 @@ export const dashboardNav = [
     ],
   },
   {
+    title: "Cold Chain",
+    href: "/dashboard/cold-chain",
+    icon: "thermometer",
+    description: "IoT temperature, humidity and GPS tracking of shipments in transit, with alerts and risk prediction.",
+    items: [
+      {
+        title: "Shipments",
+        href: "/dashboard/cold-chain",
+        icon: "thermometer",
+        roles: COLD_CHAIN_ROLES,
+        description: "Live trips: allocation, current conditions, location, alerts and predicted risk.",
+      },
+      {
+        title: "Create shipment",
+        href: "/dashboard/cold-chain/start",
+        icon: "package-plus",
+        roles: COLD_CHAIN_MANAGER_ROLES,
+        description: "Take over a shipment the warehouse dispatched and set its temperature limits.",
+      },
+      {
+        title: "Drivers",
+        href: "/dashboard/cold-chain/drivers",
+        icon: "id-card",
+        roles: COLD_CHAIN_MANAGER_ROLES,
+        description: "Drivers, their licences and availability.",
+      },
+      {
+        title: "Trucks",
+        href: "/dashboard/cold-chain/trucks",
+        icon: "truck",
+        roles: COLD_CHAIN_MANAGER_ROLES,
+        description: "Trucks, refrigeration ranges, installed sensors and availability.",
+      },
+      {
+        title: "History",
+        href: "/dashboard/cold-chain/history",
+        icon: "history",
+        roles: COLD_CHAIN_ROLES,
+        description: "Delivered shipments with temperature, humidity, risk and alert summaries.",
+      },
+      {
+        title: "Devices",
+        href: "/dashboard/cold-chain/devices",
+        icon: "cpu",
+        roles: COLD_CHAIN_MANAGER_ROLES,
+        description: "ESP32 loggers and simulators: registration, keys and status.",
+      },
+    ],
+  },
+  {
     title: "Warehouse",
     href: "/dashboard/warehouse",
     icon: "warehouse",
-    description: "FEFO inventory, QR batch tracking and storage allocation.",
+    description: "FEFO inventory, QR batch tracking, pharmacy order fulfilment and storage allocation.",
     items: [
       {
         title: "Overview",
         href: "/dashboard/warehouse",
         icon: "layout-grid",
-        description: "Current warehouse stock, expiry alerts, capacity and recent movements.",
+        roles: WAREHOUSE_ROLES,
+        description: "Current warehouse stock, expiry alerts, capacity, orders and recent movements.",
+      },
+      {
+        title: "Orders",
+        href: "/dashboard/warehouse/orders",
+        icon: "file-text",
+        roles: WAREHOUSE_ROLES,
+        description: "Pharmacy orders: reserve stock (FEFO), verify picks, dispatch and track receipt.",
       },
       {
         title: "Inventory",
         href: "/dashboard/warehouse/inventory",
         icon: "activity",
+        roles: WAREHOUSE_ROLES,
         description: "Stock by batch and storage location, earliest expiry first.",
       },
       {
         title: "FEFO",
         href: "/dashboard/warehouse/fefo",
         icon: "calendar-days",
+        roles: WAREHOUSE_ROLES,
         description: "Expiry alerts, First-Expiry-First-Out picking and compliance.",
       },
       {
         title: "QR Scan",
         href: "/dashboard/warehouse/qr",
         icon: "qr-code",
+        roles: WAREHOUSE_ROLES,
         description: "Scan or type a batch label to see the batch and move its stock.",
-      },
-      {
-        title: "Storage",
-        href: "/dashboard/warehouse/storage",
-        icon: "map-pin",
-        description: "Zones, racks and storage locations with their capacity and contents.",
       },
       {
         title: "Receive & Allocate",
         href: "/dashboard/warehouse/allocation",
         icon: "chart-bar-increasing",
+        roles: WAREHOUSE_ROLES,
         description: "Register incoming batches and get recommended storage locations.",
+      },
+      {
+        title: "Storage",
+        href: "/dashboard/warehouse/storage",
+        icon: "map-pin",
+        roles: WAREHOUSE_ROLES,
+        description: "Zones, racks and storage locations with their capacity and contents.",
+      },
+      {
+        title: "Discrepancies",
+        href: "/dashboard/warehouse/discrepancies",
+        icon: "badge-alert",
+        roles: WAREHOUSE_ROLES,
+        description: "Missing, damaged or incorrect items reported by pharmacies on delivered shipments.",
+      },
+      {
+        title: "Returns",
+        href: "/dashboard/warehouse/returns",
+        icon: "refresh-cw",
+        roles: WAREHOUSE_ROLES,
+        description: "Returns from pharmacies: approve, reject and receive into warehouse locations.",
       },
       {
         title: "Movements",
         href: "/dashboard/warehouse/movements",
-        icon: "refresh-cw",
-        description: "History of receipts, transfers, dispatches, adjustments and disposals.",
+        icon: "activity",
+        roles: WAREHOUSE_ROLES,
+        description: "History of receipts, transfers, dispatches, adjustments, disposals and scans.",
+      },
+      {
+        title: "Configuration",
+        href: "/dashboard/warehouse/settings",
+        icon: "settings",
+        roles: ADMIN_ROLES,
+        description: "Warehouses, zones, racks, storage locations and medicines.",
+      },
+      {
+        title: "Staff",
+        href: "/dashboard/warehouse/staff",
+        icon: "users",
+        roles: ADMIN_ROLES,
+        description: "Staff accounts, roles and access.",
       },
     ],
   },

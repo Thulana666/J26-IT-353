@@ -6,6 +6,7 @@ const supabase = require("./src/config/supabase");
 const ingestionRoutes = require("./src/ingestion/routes");
 const { medicinesRouter, warehouseRouter } = require("./src/warehouse");
 const { pharmacyRouter } = require("./src/pharmacy");
+const { coldChainRouter } = require("./src/cold-chain");
 
 const app = express();
 
@@ -55,6 +56,9 @@ app.use("/api/warehouse", warehouseRouter);
 
 // Component 4: pharmacy orders, shipments, POS, returns and inventory.
 app.use("/api/pharmacy", pharmacyRouter);
+
+// Component 2: IoT cold-chain monitoring, sensor readings and alerts.
+app.use("/api/cold-chain", coldChainRouter);
 
 const PORT = process.env.PORT || 5000;
 

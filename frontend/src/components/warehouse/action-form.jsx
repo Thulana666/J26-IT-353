@@ -9,6 +9,10 @@ import styles from "./warehouse.module.css";
 // { ok: true, message } or { ok: false, error, fields }.
 // Submits through onSubmit (not the form `action` prop) so React does not
 // clear the inputs when the backend rejects them; it resets after success.
+//
+// idempotent: sends a clientRequestId that stays the same until the action
+// succeeds, so a double click or a retry after a lost response is recorded
+// only once by the backend.
 export function ActionForm({
   action,
   submitLabel,
@@ -16,18 +20,27 @@ export function ActionForm({
   variant,
   className,
   resetOnSuccess = true,
+  idempotent = false,
   children,
 }) {
   const [state, formAction, pending] = useActionState(action, null);
   const formRef = useRef(null);
+  const requestIdRef = useRef(null);
 
   useEffect(() => {
-    if (state?.ok && resetOnSuccess) formRef.current?.reset();
+    if (!state?.ok) return;
+    requestIdRef.current = null;
+    if (resetOnSuccess) formRef.current?.reset();
   }, [state, resetOnSuccess]);
 
   function handleSubmit(event) {
     event.preventDefault();
+    if (pending) return;
     const formData = new FormData(event.currentTarget);
+    if (idempotent) {
+      requestIdRef.current ??= crypto.randomUUID();
+      formData.set("clientRequestId", requestIdRef.current);
+    }
     startTransition(() => formAction(formData));
   }
 

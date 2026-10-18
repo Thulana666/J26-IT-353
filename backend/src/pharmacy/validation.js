@@ -20,15 +20,15 @@ function parse(schema, source) {
 // Accepts numbers and numeric strings (form fields, query parameters).
 const int = (min = 0, max = 1_000_000) =>
   z.coerce
-    .number({ error: "must be a number" })
+    .number({ invalid_type_error: "must be a number" })
     .int("must be a whole number")
     .min(min, `must be at least ${min}`)
     .max(max, `must be at most ${max}`);
 
 const num = (min = 0, max = 1_000_000_000) =>
-  z.coerce.number({ error: "must be a number" }).min(min, `must be at least ${min}`).max(max, `must be at most ${max}`);
+  z.coerce.number({ invalid_type_error: "must be a number" }).min(min, `must be at least ${min}`).max(max, `must be at most ${max}`);
 
-const id = z.uuid("must be a valid id");
+const id = z.string().uuid("must be a valid id");
 
 // Optional text: trimmed, empty -> undefined.
 const text = (max = 500) =>
@@ -37,7 +37,7 @@ const text = (max = 500) =>
     z.string().trim().max(max, `must be at most ${max} characters`).optional()
   );
 
-const requiredText = (max = 500) => z.string({ error: "is required" }).trim().min(1, "is required").max(max);
+const requiredText = (max = 500) => z.string({ invalid_type_error: "is required" }).trim().min(1, "is required").max(max);
 
 // Optional values that may arrive as "" from forms.
 const optional = (schema) => z.preprocess((value) => (value === "" || value === null ? undefined : value), schema.optional());

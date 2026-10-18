@@ -1,6 +1,7 @@
 // /api/warehouse/storage - zones, racks and storage locations.
 
 const express = require("express");
+const QRCode = require("qrcode");
 const store = require("../store");
 const { HttpError, unwrap } = require("../errors");
 const { rules, validate, fieldError, toColumns } = require("../validation");
@@ -8,6 +9,7 @@ const { requireAdmin } = require("../auth");
 const { buildHierarchy } = require("../services");
 const { todayISO } = require("../dates");
 const { STORAGE_CONDITIONS, ZONE_TYPES, ACCESSIBILITY } = require("../constants");
+const { buildLocationPayload } = require("../fulfilment");
 
 const router = express.Router();
 const { supabase } = store;
@@ -119,6 +121,72 @@ router.patch("/locations/:id", requireAdmin, async (req, res) => {
   }
   unwrap(await supabase.from("storage_locations").update(toColumns(values, LOCATION_COLUMNS)).eq("id", id));
   res.json({ location: await store.getLocation(id) });
+});
+
+// PATCH /api/warehouse/storage/zones/:id - name, temperature range, secure flag.
+// Zone type and storage condition are fixed once stock may be stored there.
+router.patch("/zones/:id", requireAdmin, async (req, res) => {
+  const { id } = validate(req.params, { id: rules.uuid({ required: true }) });
+  const values = validate(req.body, {
+    name: rules.string({ max: 120 }),
+    minTempC: rules.number({ min: -80, max: 60, nullable: true }),
+    maxTempC: rules.number({ min: -80, max: 60, nullable: true }),
+    isSecure: rules.bool(),
+  });
+  if (Object.keys(values).length === 0) throw new HttpError(400, "Nothing to update");
+  const current = unwrap(await supabase.from("warehouse_zones").select("*").eq("id", id).maybeSingle());
+  if (!current) throw new HttpError(404, "Zone not found");
+  const min = values.minTempC !== undefined ? values.minTempC : current.min_temp_c;
+  const max = values.maxTempC !== undefined ? values.maxTempC : current.max_temp_c;
+  if (min != null && max != null && Number(min) > Number(max)) throw fieldError("maxTempC", "must be at least the minimum temperature");
+  if (values.isSecure === false && current.is_secure) {
+    const controlled = unwrap(
+      await supabase.from("warehouse_stock_overview").select("stock_id").eq("zone_id", id).eq("is_controlled", true).limit(1)
+    );
+    if (controlled.length) throw new HttpError(409, "This zone holds controlled medicines; move them before making it non-secure");
+  }
+  const row = unwrap(
+    await supabase
+      .from("warehouse_zones")
+      .update(toColumns(values, { name: "name", minTempC: "min_temp_c", maxTempC: "max_temp_c", isSecure: "is_secure" }))
+      .eq("id", id)
+      .select()
+      .single()
+  );
+  res.json({ zone: row });
+});
+
+router.patch("/racks/:id", requireAdmin, async (req, res) => {
+  const { id } = validate(req.params, { id: rules.uuid({ required: true }) });
+  const values = validate(req.body, {
+    code: rules.string({ max: 20 }),
+    distanceToDispatchM: rules.number({ min: 0, max: 10000 }),
+  });
+  if (Object.keys(values).length === 0) throw new HttpError(400, "Nothing to update");
+  const row = unwrap(
+    await supabase
+      .from("warehouse_racks")
+      .update(toColumns(values, { code: "code", distanceToDispatchM: "distance_to_dispatch_m" }))
+      .eq("id", id)
+      .select()
+      .maybeSingle()
+  );
+  if (!row) throw new HttpError(404, "Rack not found");
+  res.json({ rack: row });
+});
+
+// GET /api/warehouse/storage/locations/:id/label - QR label for a shelf
+// location ("PTWH:LOC:<id>"), scanned to verify picks and put-aways.
+router.get("/locations/:id/label", async (req, res) => {
+  const { id } = validate(req.params, { id: rules.uuid({ required: true }) });
+  const location = await store.getLocation(id);
+  const payload = buildLocationPayload(location.id);
+  const svg = await QRCode.toString(payload, { type: "svg", errorCorrectionLevel: "M", margin: 2 });
+  res.json({
+    location,
+    payload,
+    imageDataUrl: `data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}`,
+  });
 });
 
 module.exports = router;

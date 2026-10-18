@@ -4,7 +4,7 @@ const express = require("express");
 const store = require("../store");
 const { HttpError, fromDbError, unwrap } = require("../errors");
 const { rules, validate, fieldError } = require("../validation");
-const { requireActive, requireAdmin } = require("../auth");
+const { requireAdmin } = require("../auth");
 const { toBatch } = require("../mappers");
 const { todayISO } = require("../dates");
 const { classifyExpiry, thresholdsOf, widestThresholds, EXPIRY_STATUSES } = require("../expiry");
@@ -73,7 +73,7 @@ router.get("/:id", async (req, res) => {
 
 // POST /api/warehouse/batches - registers a batch and issues its QR code.
 // Stock is added afterwards with a "receive" movement.
-router.post("/", requireActive, async (req, res) => {
+router.post("/", async (req, res) => {
   const values = validate(req.body, {
     medicineId: rules.uuid({ required: true }),
     batchNumber: rules.string({ required: true, max: 60 }),

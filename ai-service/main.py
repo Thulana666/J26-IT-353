@@ -1,20 +1,23 @@
 """PharmaTwin AI/optimisation service.
 
-Currently serves Component 3 (warehouse spatial allocation). It is stateless
-and has no database access: the Node.js backend sends the current warehouse
-state with each request.
+Serves Component 3 (warehouse spatial allocation) and Component 2 (cold-chain
+risk prediction; the CNN-LSTM is not trained yet, so /cold-chain/predict
+answers 501). It is stateless and has no database access: the Node.js backend
+sends the data with each request.
 
 Run (from ai-service/):  uvicorn main:app --port 8000
 """
 
 from fastapi import FastAPI
 
+from cold_chain.router import router as cold_chain_router
 from warehouse.router import router as warehouse_router
 
 app = FastAPI(title="PharmaTwin AI service", version="0.1.0")
 app.include_router(warehouse_router)
+app.include_router(cold_chain_router)
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "service": "pharmatwin-ai-service", "modules": ["warehouse.spatial"]}
+    return {"status": "ok", "service": "pharmatwin-ai-service", "modules": ["warehouse.spatial", "cold_chain.predict"]}

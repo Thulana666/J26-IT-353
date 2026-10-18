@@ -64,6 +64,27 @@ export default async function AllocationPage({ searchParams }) {
       )
     : [null, null];
 
+  // The spatial service is down or failed: offer compatible locations without
+  // optimisation, so receiving can continue (the database checks every rule).
+  let fallback = null;
+  if (ready && recommendError) {
+    const medicine = existing?.batch.medicine ?? medicines?.find((m) => m.id === params.medicineId);
+    const quarantine = existing
+      ? existing.batch.status !== "active" || existing.expiry.status === "expired"
+      : false;
+    const [locations] = medicine
+      ? await safe(
+          warehouseApi("/warehouse/storage/locations", {
+            query: { warehouseId, storageCondition: medicine.storageCondition, activeOnly: true, minAvailable: quantity },
+          }).then((body) => body.locations)
+        )
+      : [null];
+    fallback = (locations ?? [])
+      .filter((l) => (l.zoneType === "quarantine") === quarantine && (!medicine.isControlled || l.isSecure))
+      .filter((l) => l.id !== params.excludeLocationId)
+      .sort((a, b) => a.distanceToDispatchM - b.distanceToDispatchM || a.code.localeCompare(b.code));
+  }
+
   return (
     <>
       <PageHeader title={page.title} description={page.description} mock={false} />
@@ -116,6 +137,34 @@ export default async function AllocationPage({ searchParams }) {
       </Card>
 
       {recommendError && <LoadError title="No recommendation" message={recommendError} />}
+      {fallback && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Manual placement (not optimised)</CardTitle>
+            <CardDescription>
+              The recommendation service is unavailable, so these are simply the compatible locations with room for{" "}
+              {quantity} units, nearest to dispatch first. No scoring was applied.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className={styles.stack}>
+            {fallback.length === 0 && <p className={styles.formError}>No compatible location has room for {quantity} units.</p>}
+            {fallback.slice(0, 10).map((location) => (
+              <div key={location.id} className={styles.spread}>
+                <span className={styles.textSm}>
+                  <span className={styles.mono}>{location.code}</span> · zone {location.zoneCode} · {location.accessibility}{" "}
+                  accessibility · {location.distanceToDispatchM} m to dispatch · {location.availableUnits} free
+                </span>
+                <PlaceForm
+                  candidate={{ locationId: location.id, rank: 0 }}
+                  result={{ quantity }}
+                  existing={existing}
+                  params={params}
+                />
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
       {result && <Recommendations result={result} existing={existing} params={params} />}
     </>
   );
@@ -249,7 +298,7 @@ function PlaceForm({ candidate, result, existing, params }) {
   const quantity = String(result.quantity);
   if (existing && params.excludeLocationId) {
     return (
-      <ActionForm action={recordMovementAction} submitLabel={`Move ${quantity} units here`} variant="outline">
+      <ActionForm idempotent action={recordMovementAction} submitLabel={`Move ${quantity} units here`} variant="outline">
         <input type="hidden" name="batchId" value={existing.batch.id} />
         <input type="hidden" name="movementType" value="transfer" />
         <input type="hidden" name="fromLocationId" value={params.excludeLocationId} />
@@ -260,6 +309,7 @@ function PlaceForm({ candidate, result, existing, params }) {
   }
   return (
     <ActionForm
+      idempotent
       action={receiveBatchAction}
       submitLabel={`Receive ${quantity} units here`}
       pendingLabel="Receiving…"

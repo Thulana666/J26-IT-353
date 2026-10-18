@@ -82,6 +82,18 @@ others; a source without its key is reported as skipped. Set
 asks for at most one request per hour, and ReliefWeb's robots.txt disallows
 automated RSS access (hence its API is used).
 
+## IoT cold-chain tracking & logistics risk (Component 2)
+
+Trips for dispatched shipments: drivers and refrigerated trucks, allocation,
+live sensor readings from ESP32 loggers (temperature, humidity, GPS, speed),
+alerts, predicted risk (a temporary, labelled rule-based prototype until the
+CNN-LSTM in `ai-service/cold_chain/` is trained), delivery and history, under
+**Cold Chain** in the sidebar. Apply
+`supabase/migrations/20261017000000_create_cold_chain_schema.sql` and
+`20261018000002_cold_chain_logistics.sql` after the pharmacy and warehouse
+migrations, and run the backend. Workflow, device API, dashboard API, risk
+prediction and testing: [docs/component-2-cold-chain.md](docs/component-2-cold-chain.md).
+
 ## Warehouse FEFO & QR (Component 3)
 
 FEFO inventory, QR batch labels/scanning, movement history and storage-location
