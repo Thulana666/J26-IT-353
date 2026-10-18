@@ -19,6 +19,7 @@
 
 const express = require("express");
 const { supabase, previousReading, insertReadings, recordObservedAlerts } = require("../store");
+const { evaluateRisk } = require("../risk/service");
 const { HttpError, unwrap } = require("../errors");
 const { authenticateDevice } = require("../device-auth");
 const { parseIngestBody, checkReading } = require("../validation");
@@ -28,7 +29,7 @@ const router = express.Router();
 
 const INGEST_SELECT =
   "shipment_id, device_id, temp_min_c, temp_max_c, humidity_min_pct, humidity_max_pct, reading_interval_seconds, " +
-  "is_test, monitoring_status, started_at, ended_at, shipment:shipments!inner(shipment_number, received_at)";
+  "is_test, monitoring_status, trip_status, started_at, ended_at, shipment:shipments!inner(shipment_number, received_at)";
 
 // The monitored shipment this device reports for: the one named in the request
 // (an active or ended assignment, for buffered readings), else its active one.
@@ -59,6 +60,10 @@ router.post("/", authenticateDevice, async (req, res) => {
   const isSimulator = device.device_type === "simulator";
   if (isSimulator && !monitor.is_test) {
     throw new HttpError(409, "A simulator can only report for test shipments");
+  }
+  // Readings belong to a running trip (or, buffered, to a delivered one).
+  if (!["in_transit", "delivered"].includes(monitor.trip_status)) {
+    throw new HttpError(409, `The trip of shipment ${monitor.shipment.shipment_number} has not started yet`);
   }
 
   const valid = [];
@@ -117,6 +122,18 @@ router.post("/", authenticateDevice, async (req, res) => {
       console.error(`[cold-chain] alert evaluation failed for ${monitor.shipment_id}: ${error.message}`);
     }
   }
+  // Predicted risk with the new readings (trips in transit only).
+  let risk = null;
+  if (inserted.length && monitor.trip_status === "in_transit") {
+    try {
+      const prediction = await evaluateRisk(monitor.shipment_id, { now });
+      if (prediction) {
+        risk = { riskLevel: prediction.riskLevel, riskProbability: prediction.riskProbability, riskType: prediction.riskType, isPrototype: prediction.isPrototype };
+      }
+    } catch (error) {
+      console.error(`[cold-chain] risk evaluation failed for ${monitor.shipment_id}: ${error.message}`);
+    }
+  }
 
   res.status(inserted.length ? 201 : 200).json({
     shipmentId: monitor.shipment_id,
@@ -125,6 +142,7 @@ router.post("/", authenticateDevice, async (req, res) => {
     duplicates,
     rejected,
     alerts,
+    risk,
   });
 });
 

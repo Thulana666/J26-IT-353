@@ -11,16 +11,36 @@
 // GET   /:id/readings   readings oldest first (?from=&to=&limit=, default the newest 1000)
 // GET   /:id/alerts     alerts, most recent first (?status=open,acknowledged,resolved&limit=)
 // GET   /:id/risk       the newest risk prediction, or null when there is none yet
+//
+// Trip workflow (admin/warehouse): ready_for_dispatch -> allocated -> in_transit -> delivered
+// POST  /:id/allocate   { driverId, truckId, deviceId? } assign (or change, before the start) driver, truck
+//                       and sensor device (default: the truck's installed device)
+// POST  /:id/start      start the trip: readings are accepted from now; driver on trip, truck in use
+// POST  /:id/deliver    always 403: only the assigned driver confirms delivery, in the Driver Portal
+//                       (POST /api/cold-chain/driver/deliveries/:id/deliver). Repeating start changes nothing.
+// GET   /:id/issues     problems the driver reported (staff)
+// GET   /?tripStatus=delivered   shipment history (each item has a summary of readings, alerts, risk)
 
 const express = require("express");
-const { supabase, MONITOR_SELECT, READING_SELECT, ALERT_SELECT, loadMonitor, loadShipmentState, audit } = require("../store");
+const { supabase, MONITOR_SELECT, READING_SELECT, ALERT_SELECT, ISSUE_SELECT, loadMonitor, loadShipmentState, audit } = require("../store");
 const { HttpError, unwrap } = require("../errors");
 const { requireAnyStaff, requireWarehouseStaff, assertCanSee } = require("../../pharmacy/auth");
 const { scopeToVisible } = require("../../pharmacy/routes/common");
 const { userNames } = require("../../pharmacy/store");
-const { parse, z, id, listQuery, readingsQuery, alertsQuery, monitorCreate, monitorUpdate } = require("../validation");
+const {
+  parse,
+  z,
+  id,
+  listQuery,
+  readingsQuery,
+  alertsQuery,
+  monitorCreate,
+  monitorUpdate,
+  allocateBody,
+} = require("../validation");
+const { evaluateRisk } = require("../risk/service");
 const { defaultLimits, mergeLimits } = require("../monitoring");
-const { toMonitor, toReading, toAlert, toPrediction, toLimits } = require("../mappers");
+const { toMonitor, toReading, toAlert, toPrediction, toLimits, toIssue } = require("../mappers");
 const { ALERT_STATUSES } = require("../constants");
 
 const router = express.Router();
@@ -38,6 +58,7 @@ async function withState(rows) {
       latest: state.latest.get(row.shipment_id),
       prediction: state.predictions.get(row.shipment_id),
       openAlerts: state.alerts.get(row.shipment_id),
+      summary: state.summaries.get(row.shipment_id),
       now,
     })
   );
@@ -87,6 +108,7 @@ router.get("/", requireAnyStaff, async (req, res) => {
     .limit(query.limit ?? 100);
   builder = scopeToVisible(builder, req);
   if (query.status) builder = builder.eq("monitoring_status", query.status);
+  if (query.tripStatus) builder = builder.in("trip_status", query.tripStatus.split(","));
   if (query.test !== undefined) builder = builder.eq("is_test", query.test);
   res.json({ shipments: await withState(unwrap(await builder)) });
 });
@@ -221,6 +243,9 @@ router.patch("/:id", requireWarehouseStaff, async (req, res) => {
     changes.device_id = body.deviceId;
   }
   if (body.monitoringStatus === "ended") {
+    if (["allocated", "in_transit"].includes(current.trip_status)) {
+      throw new HttpError(409, "This trip is still live: mark it delivered instead of ending the monitoring");
+    }
     changes.monitoring_status = "ended";
     changes.ended_at = new Date().toISOString();
   }
@@ -305,6 +330,51 @@ router.get("/:id/risk", requireAnyStaff, async (req, res) => {
       .maybeSingle()
   );
   res.json({ shipmentId, prediction: toPrediction(row) });
+});
+
+// --- Trip workflow --------------------------------------------------------------
+
+async function respondWithShipment(res, shipmentId) {
+  const [monitored] = await withState([await loadMonitor(shipmentId)]);
+  res.json({ shipment: monitored });
+}
+
+router.post("/:id/allocate", requireWarehouseStaff, async (req, res) => {
+  const { shipment_id: shipmentId, pharmacy_id: pharmacyId } = await loadVisible(req, "shipment_id, pharmacy_id");
+  const body = parse(allocateBody, req.body);
+  unwrap(
+    await supabase.rpc("cold_chain_allocate_trip", {
+      p_shipment_id: shipmentId,
+      p_driver_id: body.driverId,
+      p_truck_id: body.truckId,
+      p_device_id: body.deviceId ?? null,
+      p_user_id: req.user.id,
+    })
+  );
+  await audit(req, { action: "cold_chain.trip_allocated", entityType: "shipment", entityId: shipmentId, pharmacyId, details: body });
+  await respondWithShipment(res, shipmentId);
+});
+
+router.post("/:id/start", requireWarehouseStaff, async (req, res) => {
+  const { shipment_id: shipmentId, pharmacy_id: pharmacyId } = await loadVisible(req, "shipment_id, pharmacy_id");
+  unwrap(await supabase.rpc("cold_chain_start_trip", { p_shipment_id: shipmentId, p_user_id: req.user.id }));
+  await audit(req, { action: "cold_chain.trip_started", entityType: "shipment", entityId: shipmentId, pharmacyId });
+  // First risk evaluation of the trip; a failure must not undo the start.
+  await evaluateRisk(shipmentId).catch((error) => console.error(`[cold-chain] risk evaluation failed for ${shipmentId}: ${error.message}`));
+  await respondWithShipment(res, shipmentId);
+});
+
+// Delivery is confirmed only by the assigned driver (Driver Portal). Staff can
+// see the result but never confirm it, whatever the client sends.
+router.post("/:id/deliver", () => {
+  throw new HttpError(403, "Only the assigned driver can confirm delivery, in the Driver Portal");
+});
+
+router.get("/:id/issues", requireAnyStaff, async (req, res) => {
+  const { shipment_id: shipmentId } = await loadVisible(req, "shipment_id, pharmacy_id");
+  const rows = unwrap(await supabase.from("cold_chain_issues").select(ISSUE_SELECT).eq("shipment_id", shipmentId).order("created_at", { ascending: false }));
+  const names = await userNames(rows.map((row) => row.resolved_by));
+  res.json({ shipmentId, issues: rows.map((row) => toIssue(row, names)) });
 });
 
 module.exports = router;
