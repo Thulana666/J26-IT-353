@@ -1,0 +1,17 @@
+{
+  "name": "rules-baseline",
+  "version": "0.1.0",
+  "frozen_on": "2026-10-18",
+  "git_commit": "bd3d4496ebd2bfeab271e93961e1e022a7091952",
+  "files_sha256_lf": {
+    "event_intel/classifier.py": "6df94abace045a2f442ef8728aa7afa54d50c06d5a5ba29e5cc04107e2ab3a91",
+    "event_intel/lexicons.py": "2922dd8694d2fb15be46a3bd82132edcf29c143626b27ea7858d740cd5cd52f3",
+    "event_intel/countries.py": "b1e1ef8ef15deadd4520b3d6f08d286396664e509a974785025a05444375870e"
+  },
+  "policy": [
+    "This is the frozen comparison baseline. Its accuracy has not been validated.",
+    "tests/test_rules_frozen.py fails if any rules file changes, so changes cannot happen silently.",
+    "A rule change needs a new version number and a new record, and may only be based on training or validation articles, never the test split.",
+    "Rules predictions are never used as ground-truth labels."
+  ]
+}

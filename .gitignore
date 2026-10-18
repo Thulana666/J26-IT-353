@@ -26,6 +26,11 @@ __pycache__/
 venv/
 ai-service/.venv/
 
+# Component 1 NLP data: raw article text stays local (public repository)
+ai-service/data/snapshots/*.jsonl
+ai-service/data/labels/*.sheet.csv
+ai-service/models/
+
 # IDE
 .vscode/
 .idea/
