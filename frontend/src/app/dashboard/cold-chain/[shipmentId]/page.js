@@ -6,6 +6,7 @@ import {
   LIMIT_STATE,
   SHIPMENT_STATUS,
   STORAGE_LABELS,
+  TRIP_STATUS,
   formatAge,
   formatCoordinate,
   formatDateTime,
@@ -17,7 +18,7 @@ import {
   limitState,
   rangeLabel,
 } from "@/lib/cold-chain/format";
-import { safe } from "@/lib/warehouse/page-data";
+import { getViewer, safe } from "@/lib/warehouse/page-data";
 import { WarehouseApiError } from "@/lib/warehouse/api";
 import { CalendarDaysIcon } from "@/components/icons/calendar-days";
 import { MapPinIcon } from "@/components/icons/map-pin";
@@ -28,6 +29,9 @@ import { ConditionChart, RouteChart } from "@/components/cold-chain/charts";
 import { MapPreview, mapLinks } from "@/components/cold-chain/map-preview";
 import { ReadingsTable } from "@/components/cold-chain/readings-table";
 import { RiskCard } from "@/components/cold-chain/risk-card";
+import { AutoRefresh } from "@/components/cold-chain/auto-refresh";
+import { TripPanel } from "@/components/cold-chain/trip-panel";
+import { IssuesList } from "@/components/cold-chain/issues-list";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { RealtimeRefresh } from "@/components/pharmacy/realtime-refresh";
@@ -77,6 +81,21 @@ function qualitySummary(readings, intervalSeconds) {
   return { flags, gaps, longestGapMinutes, missingTemperature };
 }
 
+// Drivers, trucks and sensors that can be allocated to this trip (available
+// ones plus those already on it).
+async function loadAllocationOptions(s) {
+  const [drivers, trucks, devices] = await Promise.all([
+    coldChainApi("/drivers"),
+    coldChainApi("/trucks"),
+    coldChainApi("/devices"),
+  ]);
+  return {
+    drivers: drivers.drivers.filter((d) => d.status === "available" || d.id === s.driver?.id),
+    trucks: trucks.trucks.filter((t) => t.status === "available" || t.id === s.truck?.id),
+    devices: devices.devices.filter((d) => d.isActive && (!d.activeShipment || d.activeShipment.shipmentId === s.shipmentId)),
+  };
+}
+
 function deliveryNote(delivery) {
   if (delivery.isDelivered) {
     return delivery.delayMinutes ? `Delivered ${formatDuration(delivery.delayMinutes)} late` : "Delivered on time";
@@ -97,13 +116,21 @@ export default async function ColdChainShipmentPage({ params }) {
     );
   }
 
-  const [[readingsData, readingsError], [alertsData, alertsError], [riskData, riskError]] = await Promise.all([
+  const { profile } = await getViewer();
+  // Admins and warehouse staff run the trip workflow (the backend enforces it too).
+  const canManage = profile?.status === "active" && ["admin", "warehouse_staff"].includes(profile.role);
+  const allocating = canManage && ["ready_for_dispatch", "allocated"].includes(shipment.trip.status);
+
+  const [[readingsData, readingsError], [alertsData, alertsError], [riskData, riskError], [allocation, allocationError], [issuesData, issuesError]] = await Promise.all([
     safe(coldChainApi(`/shipments/${shipmentId}/readings`, { query: { limit: CHART_READINGS } })),
     safe(coldChainApi(`/shipments/${shipmentId}/alerts`, { query: { limit: 50 } })),
     safe(coldChainApi(`/shipments/${shipmentId}/risk`)),
+    allocating ? safe(loadAllocationOptions(shipment)) : Promise.resolve([null, null]),
+    safe(coldChainApi(`/shipments/${shipmentId}/issues`)),
   ]);
 
   const s = shipment;
+  const predictedArrival = riskData?.prediction?.factors?.delivery_delay?.details?.estimatedArrival ?? null;
   const readings = readingsData?.readings ?? [];
   const latest = s.latestReading;
   const points = readings.map((r) => ({
@@ -137,7 +164,8 @@ export default async function ColdChainShipmentPage({ params }) {
       />
       <PageHeader title={`Shipment ${s.shipmentNumber}`} description={`${s.origin?.name ?? "Unknown origin"} → ${s.destination?.name ?? "Unknown destination"}`} mock={false}>
         {s.isTest && <TestDataBadge />}
-        <MapBadge map={CONNECTION} value={s.connection.status} />
+        <MapBadge map={TRIP_STATUS} value={s.trip.status} />
+        {s.trip.status === "in_transit" && <MapBadge map={CONNECTION} value={s.connection.status} />}
         <Button variant="outline" nativeButton={false} render={<Link href="/dashboard/cold-chain" />}>
           All shipments
         </Button>
@@ -152,6 +180,20 @@ export default async function ColdChainShipmentPage({ params }) {
           </AlertDescription>
         </Alert>
       )}
+
+      {s.trip.status === "in_transit" && <AutoRefresh seconds={30} />}
+      {allocationError && <LoadError title="Drivers and trucks could not be loaded" message={allocationError} />}
+      <TripPanel shipment={s} canManage={canManage} options={allocation} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Driver-reported issues</CardTitle>
+          <CardDescription>Problems the driver reported from the Driver Portal, with the truck sensor&apos;s values at that moment.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {issuesError ? <LoadError title="Issues could not be loaded" message={issuesError} /> : <IssuesList issues={issuesData.issues} canManage={canManage} />}
+        </CardContent>
+      </Card>
 
       {/* Current conditions */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
@@ -180,7 +222,7 @@ export default async function ColdChainShipmentPage({ params }) {
         <StatCard
           label="Expected delivery"
           value={s.delivery.expectedDeliveryAt ? formatTime(s.delivery.expectedDeliveryAt) : "—"}
-          hint={deliveryNote(s.delivery)}
+          hint={`${deliveryNote(s.delivery)}${predictedArrival ? ` · predicted arrival ${formatTime(predictedArrival)}` : ""}`}
           icon={CalendarDaysIcon}
         />
       </div>
@@ -195,6 +237,7 @@ export default async function ColdChainShipmentPage({ params }) {
             <DefinitionList
               items={[
                 ["Shipment", s.shipmentNumber],
+                ["Order", s.orderNumber ?? undefined],
                 [
                   "Medicines",
                   s.items.length ? (
@@ -302,7 +345,7 @@ export default async function ColdChainShipmentPage({ params }) {
                 <CardDescription>
                   {latestFix ? (
                     <>
-                      Latest fix {formatCoordinate(latestFix.latitude)}, {formatCoordinate(latestFix.longitude)} at {formatTime(latestFix.recordedAt)} · Open in{" "}
+                      Latest received position {formatCoordinate(latestFix.latitude)}, {formatCoordinate(latestFix.longitude)} at {formatTime(latestFix.recordedAt)} · Open in{" "}
                       <a href={links.google} target="_blank" rel="noopener noreferrer" className="font-medium underline-offset-4 hover:underline">
                         Google Maps ↗
                       </a>{" "}
