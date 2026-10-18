@@ -62,6 +62,13 @@ class WeightsIn(CamelModel):
     consolidation: float = Field(0.25, ge=0)
     zone_efficiency: float = Field(0.10, ge=0)
 
+    @model_validator(mode="after")
+    def at_least_one_positive(self) -> "WeightsIn":
+        # Reject here (422) rather than failing inside the scoring (500).
+        if self.expiry_accessibility + self.capacity_fit + self.consolidation + self.zone_efficiency <= 0:
+            raise ValueError("At least one weight must be positive")
+        return self
+
 
 class RecommendRequest(CamelModel):
     # Defaults to the service's date; the backend sends the warehouse's local date.

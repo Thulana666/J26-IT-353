@@ -27,6 +27,10 @@ function fromDbError(error) {
     case "22007":
     case "22008":
       return new HttpError(400, "A value is not allowed", { db: error.message });
+    // Lock conflicts between concurrent operations; repeating usually works.
+    case "40P01":
+    case "40001":
+      return new HttpError(409, "Another operation was changing the same stock at the same time. Please try again.");
     case "42501":
       return new HttpError(500, `Database permission missing: ${error.message}. ${error.hint ?? ""}`.trim(), {
         db: error.message,
@@ -35,7 +39,23 @@ function fromDbError(error) {
     case "42P01":
       return new HttpError(
         500,
-        "Warehouse tables are missing. Apply supabase/migrations/20261008000000_create_warehouse_schema.sql.",
+        "Warehouse tables are missing. Apply the warehouse migrations in supabase/migrations (20261008000000 and 20261018000000).",
+        { db: error.message }
+      );
+    // A column added by a later migration does not exist yet.
+    case "42703":
+    case "PGRST204":
+      return new HttpError(
+        500,
+        "The database is missing a column. Apply the latest warehouse migrations in supabase/migrations (e.g. 20261018000001_staff_warehouse_assignment.sql).",
+        { db: error.message }
+      );
+    // A database function with these parameters does not exist yet.
+    case "PGRST202":
+    case "42883":
+      return new HttpError(
+        500,
+        "The database is missing a warehouse function. Apply supabase/migrations/20261018000000_warehouse_order_fulfilment.sql.",
         { db: error.message }
       );
     default:

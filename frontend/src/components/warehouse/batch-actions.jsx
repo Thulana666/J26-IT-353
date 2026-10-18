@@ -83,7 +83,7 @@ export function BatchActions({ detail, destinations, isAdmin, via = "manual" }) 
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ActionForm action={recordMovementAction} submitLabel="Record transfer">
+          <ActionForm idempotent action={recordMovementAction} submitLabel="Record transfer">
             {common}
             <input type="hidden" name="movementType" value="transfer" />
             <div className={styles.formGrid}>
@@ -120,7 +120,7 @@ export function BatchActions({ detail, destinations, isAdmin, via = "manual" }) 
           </CardDescription>
         </CardHeader>
         <CardContent hidden={Boolean(fefo?.ineligibleReason)}>
-          <ActionForm action={recordMovementAction} submitLabel="Record dispatch" variant={fefo?.isNextToDispatch ? "default" : "outline"}>
+          <ActionForm idempotent action={recordMovementAction} submitLabel="Record dispatch" variant={fefo?.isNextToDispatch ? "default" : "outline"}>
             {common}
             <input type="hidden" name="movementType" value="dispatch" />
             <div className={styles.formGrid}>
@@ -149,7 +149,7 @@ export function BatchActions({ detail, destinations, isAdmin, via = "manual" }) 
               <CardDescription>Admins only. A reason is required and recorded.</CardDescription>
             </CardHeader>
             <CardContent className={styles.stack}>
-              <ActionForm action={recordMovementAction} submitLabel="Record adjustment" variant="outline">
+              <ActionForm idempotent action={recordMovementAction} submitLabel="Record adjustment" variant="outline">
                 {common}
                 <input type="hidden" name="movementType" value="adjustment" />
                 <div className={styles.formGrid}>
@@ -167,7 +167,7 @@ export function BatchActions({ detail, destinations, isAdmin, via = "manual" }) 
                   <TextField id="adjust-notes" name="notes" label="Reason" required placeholder="e.g. cycle count difference" />
                 </div>
               </ActionForm>
-              <ActionForm action={recordMovementAction} submitLabel="Record disposal" variant="destructive">
+              <ActionForm idempotent action={recordMovementAction} submitLabel="Record disposal" variant="destructive">
                 {common}
                 <input type="hidden" name="movementType" value="disposal" />
                 <div className={styles.formGrid}>

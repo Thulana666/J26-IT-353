@@ -96,7 +96,13 @@ async function getPeopleNames(ids) {
   return new Map(rows.map((row) => [row.id, row.full_name || row.email]));
 }
 
-// The only way stock changes; see record_inventory_movement() in the migration.
+// Calls a database function and returns its result.
+async function rpc(name, params) {
+  const data = unwrap(await supabase.rpc(name, params));
+  return Array.isArray(data) && data.length === 1 ? data[0] : data;
+}
+
+// The only way stock changes; see record_inventory_movement() in the migrations.
 async function callMovementFunction(input, { userId, today, fefoCompliant = null, overrideReason = null, performedVia }) {
   const data = unwrap(
     await supabase.rpc("record_inventory_movement", {
@@ -112,6 +118,9 @@ async function callMovementFunction(input, { userId, today, fefoCompliant = null
       p_reference: input.reference ?? null,
       p_notes: input.notes ?? null,
       p_today: today,
+      p_pick_id: input.pickId ?? null,
+      // A repeated id (double click, retry) returns the first movement.
+      p_client_request_id: input.clientRequestId ?? null,
     })
   );
   return Array.isArray(data) ? data[0] : data;
@@ -134,5 +143,6 @@ module.exports = {
   getLocation,
   getStock,
   getPeopleNames,
+  rpc,
   callMovementFunction,
 };

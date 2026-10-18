@@ -2,12 +2,16 @@
 //
 // Works on stock items (one batch at one location, see mappers.toStockItem).
 // Eligible for outbound: active batch, not expired, in a storage zone, with
-// stock. Eligible items are ordered by expiry date; ties fall back to the
-// older manufacturing date, then the earlier receipt (FIFO), then the
-// location nearest to dispatch.
+// stock that is not reserved for a pharmacy order. Eligible items are ordered
+// by expiry date; ties fall back to the older manufacturing date, then the
+// earlier receipt (FIFO), then the location nearest to dispatch.
+
+// Packs that can still be taken (stock minus reservations).
+const available = (item) => item.quantityAvailable ?? item.quantity;
 
 function dispatchIneligibility(item, today) {
   if (!(item.quantity > 0)) return "No stock";
+  if (!(available(item) > 0)) return "Reserved for pharmacy orders";
   if (item.batchStatus !== "active") return `Batch is ${item.batchStatus}`;
   if (item.expiryDate < today) return "Expired";
   if (item.zoneType !== "storage") return "Held in a quarantine zone";
@@ -54,7 +58,7 @@ function buildPickList(items, quantity, today) {
   let remaining = quantity;
   for (const item of eligible) {
     if (remaining <= 0) break;
-    const pickQuantity = Math.min(item.quantity, remaining);
+    const pickQuantity = Math.min(available(item), remaining);
     lines.push({ ...item, pickQuantity });
     remaining -= pickQuantity;
   }
@@ -62,7 +66,7 @@ function buildPickList(items, quantity, today) {
     requested: quantity,
     allocated: quantity - remaining,
     shortfall: remaining,
-    available: eligible.reduce((sum, item) => sum + item.quantity, 0),
+    available: eligible.reduce((sum, item) => sum + available(item), 0),
     lines,
     excluded,
   };
@@ -90,12 +94,13 @@ function checkDispatchCompliance(items, batchId, today) {
           expiryDate: first.expiryDate,
           storageLocationId: first.storageLocationId,
           locationCode: first.locationCode,
-          quantity: first.quantity,
+          quantity: available(first),
         },
   };
 }
 
 module.exports = {
+  available,
   dispatchIneligibility,
   compareFefo,
   splitByEligibility,
