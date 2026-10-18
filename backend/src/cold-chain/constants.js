@@ -59,7 +59,34 @@ const INGEST = {
 // Connection status from the age of the newest reading, in reading intervals.
 const CONNECTION = { onlineIntervals: 3, delayedIntervals: 10 };
 
+// Trip workflow (cold_chain_shipments.trip_status) and fleet statuses.
+const TRIP_STATUSES = ["ready_for_dispatch", "allocated", "in_transit", "delivered"];
+const DRIVER_STATUSES = ["available", "assigned", "on_trip", "inactive"];
+const TRUCK_STATUSES = ["available", "assigned", "in_use", "inactive"];
+const TRUCK_TYPES = ["refrigerated_truck", "refrigerated_van", "insulated_van", "standard_truck", "standard_van"];
+// Problems a driver can report from the Driver Portal, and their handling.
+const ISSUE_TYPES = ["vehicle", "temperature", "gps", "delay", "pharmacy_unavailable", "damaged", "route", "other"];
+const ISSUE_STATUSES = ["open", "in_review", "resolved"];
+
+// Risk levels from a probability: below 0.3 low, below 0.7 medium, else high.
+const RISK_THRESHOLDS = { medium: 0.3, high: 0.7 };
+// Predicted alerts open at this probability and resolve below CLOSE (hysteresis,
+// so a value hovering around one threshold does not open and close repeatedly).
+const PREDICTED_ALERT = { open: 0.6, high: 0.8, close: 0.4, combinedOpen: 0.7, combinedClose: 0.5 };
+// A new prediction is stored when the level changes, the probability moves by
+// at least `minChange`, or `maxAgeMinutes` passed since the last stored one.
+const PREDICTION_STORE = { minChange: 0.05, maxAgeMinutes: 5 };
+
 module.exports = {
+  TRIP_STATUSES,
+  DRIVER_STATUSES,
+  TRUCK_STATUSES,
+  TRUCK_TYPES,
+  ISSUE_TYPES,
+  ISSUE_STATUSES,
+  RISK_THRESHOLDS,
+  PREDICTED_ALERT,
+  PREDICTION_STORE,
   STORAGE_CONDITIONS,
   STRICTNESS,
   DEFAULT_LIMITS,

@@ -18,8 +18,8 @@ export function RiskCard({ prediction, error }) {
         {error && <p className="text-sm text-destructive">{error}</p>}
         {!error && !prediction && (
           <EmptyState title="No risk prediction yet">
-            The temporary prototype predictor is added in the next step; the trained CNN-LSTM model replaces it later. Alerts
-            below are measured limit crossings, not predictions.
+            Predictions start when the trip is in transit and are updated with every reading (and every few minutes without
+            one). Until the CNN-LSTM model is trained they come from a temporary rule-based prototype.
           </EmptyState>
         )}
         {prediction && (
@@ -41,9 +41,20 @@ export function RiskCard({ prediction, error }) {
               <p className="font-medium">{prediction.riskType ? `Main risk: ${RISK_TYPES[prediction.riskType] ?? prediction.riskType}` : "No dominant risk"}</p>
               <p className="mt-1 text-muted-foreground">{prediction.explanation}</p>
             </div>
+            <ul className="flex flex-col gap-1.5 text-sm">
+              {Object.entries(prediction.factors ?? {}).map(([type, factor]) => (
+                <li key={type} className="flex items-start justify-between gap-3">
+                  <span className="min-w-0">
+                    <span className="font-medium">{RISK_TYPES[type] ?? type}</span>
+                    <span className="block text-xs text-muted-foreground">{factor.explanation}</span>
+                  </span>
+                  <span className="shrink-0 tabular-nums text-muted-foreground">{formatPercent(factor.probability)}</span>
+                </li>
+              ))}
+            </ul>
             <DefinitionList
               items={[
-                ["Model", `${prediction.modelName} ${prediction.modelVersion}`],
+                ["Model", `${prediction.modelName} ${prediction.modelVersion}${prediction.isPrototype ? " (rule-based prototype, not a trained model)" : ""}`],
                 ["Predicted", formatDateTime(prediction.predictedAt)],
                 ["Looks ahead", formatDuration(prediction.horizonMinutes)],
                 ["Based on", `${prediction.readingsUsed} reading(s) up to ${formatDateTime(prediction.dataUntil)}`],

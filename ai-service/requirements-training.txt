@@ -1,0 +1,4 @@
+# Training the cold-chain CNN-LSTM (Component 2). Not needed to run the service.
+-r requirements.txt
+torch>=2.3
+scikit-learn>=1.5
