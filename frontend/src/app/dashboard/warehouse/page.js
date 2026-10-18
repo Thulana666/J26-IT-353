@@ -86,6 +86,42 @@ export default async function WarehouseOverviewPage() {
             />
           </div>
 
+          <Card>
+            <CardHeader>
+              <CardTitle>Pharmacy orders and stock flow</CardTitle>
+              <CardDescription>
+                <Link href="/dashboard/warehouse/orders" className={styles.link}>
+                  Order queue →
+                </Link>{" "}
+                Warehouse stock includes packs reserved for orders until they are dispatched; in-transit and confirmed
+                quantities come from the shipments the pharmacies receive (Component 4).
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className={styles.statGrid}>
+                {[
+                  ["pending", "Pending", "awaiting stock reservation"],
+                  ["processing", "Processing", "reserved, being picked"],
+                  ["ready", "Ready to dispatch", "every pick verified"],
+                  ["in_transit", "In transit", `${formatNumber(summary.flow.inTransitUnits)} packs on the road`],
+                  ["received", "Received", `${formatNumber(summary.flow.confirmedUnits)} packs confirmed by pharmacies`],
+                ].map(([stage, label, hint]) => (
+                  <Link key={stage} href={`/dashboard/warehouse/orders?stage=${stage}`} className={styles.flowTile}>
+                    <span className={`${styles.small} ${styles.muted}`}>{label}</span>
+                    <span className={styles.score}>{formatNumber(summary.orders[stage])}</span>
+                    <span className={`${styles.small} ${styles.muted}`}>{hint}</span>
+                  </Link>
+                ))}
+              </div>
+              <p className={`${styles.small} ${styles.muted}`}>
+                Warehouse: {formatNumber(summary.flow.warehouseUnits)} packs on hand, {formatNumber(summary.flow.reservedUnits)}{" "}
+                reserved · in transit: {formatNumber(summary.flow.inTransitUnits)} packs in {summary.flow.inTransitShipments}{" "}
+                shipment(s) · confirmed at pharmacies: {formatNumber(summary.flow.confirmedUnits)} packs
+                {summary.flow.notAcceptedUnits > 0 && ` (${formatNumber(summary.flow.notAcceptedUnits)} shipped packs not accepted)`}
+              </p>
+            </CardContent>
+          </Card>
+
           {summary.quarantineRequired.batches > 0 && (
             <LoadError
               title="Stock needs to move to quarantine"

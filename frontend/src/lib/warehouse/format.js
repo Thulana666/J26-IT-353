@@ -24,6 +24,54 @@ export const STORAGE_LABELS = {
 
 export const VIA_LABELS = { manual: "Form", qr_scan: "QR scan", system: "System" };
 
+// Warehouse stages of a pharmacy order (backend/src/warehouse/fulfilment.js).
+export const ORDER_STAGE_LABELS = {
+  pending: "Pending",
+  processing: "Processing",
+  ready: "Ready to dispatch",
+  in_transit: "In transit",
+  received: "Received",
+  cancelled: "Cancelled",
+};
+
+export const PICK_STATUS_LABELS = { reserved: "Reserved", picked: "Picked", dispatched: "Dispatched", released: "Released" };
+
+export const DISCREPANCY_TYPE_LABELS = {
+  missing: "Missing",
+  excess: "Excess",
+  damaged: "Damaged",
+  incorrect_item: "Incorrect item",
+  incorrect_batch: "Incorrect batch",
+  expired: "Expired",
+  other: "Other",
+};
+
+export const RETURN_REASON_LABELS = {
+  expired: "Expired",
+  near_expiry: "Near expiry",
+  damaged: "Damaged",
+  recalled: "Recalled",
+  overstock: "Overstock",
+  incorrect_item: "Incorrect item",
+  other: "Other",
+};
+
+export const ROLE_LABELS = {
+  admin: "Admin",
+  warehouse_staff: "Warehouse staff",
+  pharmacy_staff: "Pharmacy staff",
+  user: "User (no access)",
+};
+
+export const SCAN_RESULT_LABELS = {
+  ok: "Verified",
+  invalid: "Invalid code",
+  not_found: "Unknown code",
+  inactive: "Deactivated label",
+  batch_mismatch: "Wrong batch",
+  location_mismatch: "Wrong location",
+};
+
 const FIELD_LABELS = {
   batchId: "Batch",
   medicineId: "Medicine",

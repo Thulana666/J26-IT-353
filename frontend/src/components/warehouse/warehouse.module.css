@@ -196,6 +196,19 @@
   color: var(--popover-foreground);
 }
 
+.checkboxRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.checkboxRow input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--primary);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
@@ -257,6 +270,20 @@
 .toneNeutral {
   background: var(--muted);
   color: var(--muted-foreground);
+}
+
+.flowTile {
+  display: grid;
+  gap: 0.125rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  transition: background-color 0.15s;
+}
+
+.flowTile:hover {
+  background: color-mix(in oklch, var(--muted) 50%, transparent);
 }
 
 /* Capacity meter ---------------------------------------------------------- */
