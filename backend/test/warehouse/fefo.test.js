@@ -118,6 +118,21 @@ test("batches expiring on the same day as the earliest are compliant", () => {
   assert.equal(checkDispatchCompliance(items, "B", TODAY).compliant, true);
 });
 
+test("stock reserved for pharmacy orders is not available for picking", () => {
+  const items = [
+    item({ batchNumber: "RESERVED", expiryDate: "2026-11-01", quantity: 50, quantityAvailable: 0 }),
+    item({ batchNumber: "PARTLY", expiryDate: "2026-12-01", quantity: 50, quantityAvailable: 20 }),
+    item({ batchNumber: "FREE", expiryDate: "2027-06-01", quantity: 50, quantityAvailable: 50 }),
+  ];
+  const result = buildPickList(items, 30, TODAY);
+  assert.deepEqual(result.lines.map((l) => [l.batchNumber, l.pickQuantity]), [["PARTLY", 20], ["FREE", 10]]);
+  assert.equal(result.available, 70);
+  assert.equal(result.excluded[0].reason, "Reserved for pharmacy orders");
+  // A fully reserved batch is not "an earlier batch to dispatch first".
+  assert.equal(checkDispatchCompliance(items, "PARTLY", TODAY).compliant, true);
+  assert.equal(checkDispatchCompliance(items, "FREE", TODAY).recommended.batchNumber, "PARTLY");
+});
+
 test("expired stock does not count as an earlier batch", () => {
   const items = [
     item({ batchNumber: "EXPIRED", expiryDate: "2026-09-01" }),

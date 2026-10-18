@@ -1,5 +1,13 @@
 import { Badge } from "@/components/ui/badge";
-import { EXPIRY_LABELS, MOVEMENT_LABELS, STORAGE_LABELS, daysLabel } from "@/lib/warehouse/format";
+import {
+  EXPIRY_LABELS,
+  MOVEMENT_LABELS,
+  ORDER_STAGE_LABELS,
+  PICK_STATUS_LABELS,
+  SCAN_RESULT_LABELS,
+  STORAGE_LABELS,
+  daysLabel,
+} from "@/lib/warehouse/format";
 import styles from "./warehouse.module.css";
 
 const TONES = {
@@ -76,4 +84,44 @@ export function StorageBadge({ condition, isControlled = false, isSecure = false
 
 export function ZoneTypeBadge({ zoneType }) {
   return zoneType === "quarantine" ? <ToneBadge tone="amber">Quarantine</ToneBadge> : null;
+}
+
+const STAGE_TONES = { pending: "amber", processing: "sky", ready: "violet", in_transit: "sky", received: "green", cancelled: "neutral" };
+
+export function OrderStageBadge({ stage }) {
+  return <ToneBadge tone={STAGE_TONES[stage] ?? "neutral"}>{ORDER_STAGE_LABELS[stage] ?? stage}</ToneBadge>;
+}
+
+const PICK_TONES = { reserved: "amber", picked: "green", dispatched: "violet", released: "neutral" };
+
+export function PickStatusBadge({ status }) {
+  return <ToneBadge tone={PICK_TONES[status] ?? "neutral"}>{PICK_STATUS_LABELS[status] ?? status}</ToneBadge>;
+}
+
+// Discrepancy reports, returns, shipments and integration handoffs.
+const STATUS_TONES = {
+  open: "red",
+  acknowledged: "amber",
+  resolved: "green",
+  pending: "amber",
+  approved: "sky",
+  rejected: "neutral",
+  received: "green",
+  in_transit: "sky",
+  received_with_discrepancies: "orange",
+  sent: "green",
+  failed: "red",
+  skipped: "neutral",
+};
+
+export function StatusBadge({ status, label }) {
+  return (
+    <ToneBadge tone={STATUS_TONES[status] ?? "neutral"}>
+      <span className={styles.capitalize}>{label ?? status.replaceAll("_", " ")}</span>
+    </ToneBadge>
+  );
+}
+
+export function ScanResultBadge({ result }) {
+  return <ToneBadge tone={result === "ok" ? "green" : "red"}>{SCAN_RESULT_LABELS[result] ?? result}</ToneBadge>;
 }

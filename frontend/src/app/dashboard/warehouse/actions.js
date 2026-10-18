@@ -37,6 +37,7 @@ export async function recordMovementAction(_previous, formData) {
     reference: text(formData, "reference"),
     notes: text(formData, "notes"),
     fefoOverrideReason: text(formData, "fefoOverrideReason"),
+    clientRequestId: text(formData, "clientRequestId"),
   };
   // Adjustments: one location, counted down (out of it) or up (into it).
   const adjustLocationId = text(formData, "adjustLocationId");
@@ -82,6 +83,7 @@ export async function receiveBatchAction(_previous, formData) {
         quantity: text(formData, "quantity"),
         toLocationId: text(formData, "toLocationId"),
         reference: text(formData, "reference"),
+        clientRequestId: text(formData, "clientRequestId"),
       },
     });
   } catch (error) {
@@ -108,6 +110,7 @@ export async function dispatchFefoAction(_previous, formData) {
         quantity: text(formData, "quantity"),
         reference: text(formData, "reference"),
         notes: text(formData, "notes"),
+        clientRequestId: text(formData, "clientRequestId"),
       },
     });
   } catch (error) {
