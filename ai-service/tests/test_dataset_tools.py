@@ -6,6 +6,7 @@ these tests. They are not research labels.
 """
 
 import csv
+import subprocess
 import json
 import tempfile
 import unittest
@@ -187,6 +188,20 @@ class LabelSheetTests(unittest.TestCase):
                 generate(snapshot, out, "t1", seed=1)
 
 
+    def test_empty_optional_sheets_are_not_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = write_snapshot(Path(tmp))
+            result = generate(snapshot, Path(tmp) / "labels", "pilot", seed=1, max_main=3,
+                              metadata_size=0, agreement_size=0)
+            self.assertTrue(result["paths"]["main"].exists())
+            self.assertFalse(result["paths"]["metadata_review"].exists())
+            self.assertFalse(result["paths"]["agreement_review"].exists())
+            sheets = result["manifest"]["sheets"]
+            self.assertEqual(sheets["main"]["rows"], 3)
+            self.assertIsNone(sheets["metadata_review"]["file"])
+            self.assertEqual(result["manifest"]["settings"]["metadata_family_cap"], 2)
+
+
 class ValidatorTests(unittest.TestCase):
     def setUp(self):
         self.records = {r["id"]: r for r in fixture_records()}
@@ -343,6 +358,58 @@ class SplitTests(unittest.TestCase):
             dry = make_split(snapshot, blank, include_unlabelled=True, stratify="none")
             self.assertFalse(dry["labelled_only"])
             self.assertEqual(sum(dry["counts"]["articles"].values()), 5)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _git(*args):
+    try:
+        return subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8", timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+@unittest.skipIf(_git("rev-parse", "--git-dir") is None or _git("rev-parse", "--git-dir").returncode != 0,
+                 "not inside a git checkout")
+class RepositoryPrivacyTests(unittest.TestCase):
+    """The repository is public: article text, credentials and model weights must stay out of git."""
+
+    MUST_BE_IGNORED = [
+        "ai-service/data/snapshots/articles_20261018T000000Z.jsonl",
+        "ai-service/data/labels/article_labels_pilot.sheet.csv",
+        "ai-service/data/labels/article_labels_pilot.sheet.xlsx",
+        "ai-service/data/labels/pilot (1).csv",
+        "ai-service/data/labels/~$article_labels_pilot.labels.csv",
+        "ai-service/data/labels/validation_report.json",
+        "ai-service/data/raw/articles.json",
+        "ai-service/results.jsonl",
+        "ai-service/models/event_category/model.safetensors",
+        "ai-service/runs/checkpoint-100/optimizer.pt",
+        "backend/.env",
+    ]
+    MAY_BE_COMMITTED = [
+        "ai-service/data/README.md",
+        "ai-service/data/labels/LABEL_GUIDE.md",
+        "ai-service/data/labels/article_labels_pilot.labels.csv",
+        "ai-service/data/labels/label_sheets_pilot.manifest.json",
+        "ai-service/data/snapshots/articles_20261018T000000Z.manifest.json",
+        "ai-service/data/splits/split_v1.json",
+    ]
+
+    def test_gitignore_keeps_article_text_and_weights_local(self):
+        for path in self.MUST_BE_IGNORED:
+            self.assertEqual(_git("check-ignore", "-q", "--no-index", path).returncode, 0, f"{path} is not ignored")
+        for path in self.MAY_BE_COMMITTED:
+            self.assertEqual(_git("check-ignore", "-q", "--no-index", path).returncode, 1, f"{path} is ignored")
+
+    def test_tracked_data_files_hold_no_article_text(self):
+        tracked = _git("ls-files", "ai-service/data").stdout.split()
+        for path in tracked:
+            self.assertFalse(path.endswith((".jsonl", ".sheet.csv", ".xlsx")), f"{path} must not be committed")
+            if path.endswith(".labels.csv"):
+                columns, _ = read_csv(REPO_ROOT / path)
+                self.assertEqual(tuple(columns), EXPORT_COLUMNS, f"{path} is not a labels-only export")
 
 
 class SchemaTests(unittest.TestCase):

@@ -24,7 +24,10 @@ python -m event_intel.dataset.split --snapshot data/snapshots/articles_<UTC>.jso
     --metadata-review data/labels/metadata_review_v1.labels.csv
 ```
 
-A pilot of 60 articles: add `--version pilot --max-main 60` to step 2.
+A pilot of 60 articles (main sheet only): add
+`--version pilot --max-main 60 --metadata-size 0 --agreement-size 0` to step 2.
+With the same snapshot and seed, the pilot articles are a subset of the full
+v1 main sheet, so pilot labels can be carried over after the guide is revised.
 
 ## Files
 
@@ -33,12 +36,16 @@ A pilot of 60 articles: add `--version pilot --max-main 60` to step 2.
 | `snapshots/articles_<UTC>.jsonl` | Raw `event_articles` rows, sorted by id | **No**: full article text, and the repository is public |
 | `snapshots/articles_<UTC>.manifest.json` | Row count, SHA-256, fields, git commit (no credentials) | Yes |
 | `labels/LABEL_GUIDE.md` | Label guide v1.0 | Yes |
-| `labels/*_v1.sheet.csv` | Working sheets with ≤2,000-character excerpts | **No**: back them up privately |
+| `labels/*.sheet.csv` (and any other copy, e.g. `.xlsx`) | Working sheets with ≤2,000-character excerpts | **No**: back them up privately |
 | `labels/*_v1.labels.csv` | Labels-only export: ids, URLs, titles, labels, short evidence quotes | Yes |
 | `labels/label_sheets_v1.manifest.json` | Sampling settings, seed, snapshot hash, article ids per sheet | Yes |
 | `splits/split_v1.json` | Article → group → split, with hashes and counts | Yes |
 
-Model weights (`ai-service/models/`) are never committed.
+`.gitignore` uses an allow-list: everything under `ai-service/data/` is ignored
+except this README, the label guide, `*.manifest.json`, `labels/*.labels.csv`
+and `splits/*.json`. Model weights (`ai-service/models/`, `*.safetensors`,
+`*.pt`, checkpoints) are never committed. `tests/test_dataset_tools.py`
+checks both rules.
 
 ## Sampling (label_sheet)
 

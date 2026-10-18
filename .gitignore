@@ -26,10 +26,29 @@ __pycache__/
 venv/
 ai-service/.venv/
 
-# Component 1 NLP data: raw article text stays local (public repository)
-ai-service/data/snapshots/*.jsonl
-ai-service/data/labels/*.sheet.csv
+# Component 1 NLP data. The repository is public, so article text stays local.
+# Allow-list: everything under ai-service/data/ is ignored except the README,
+# the label guide, manifests (ids and hashes only), labels-only exports and
+# split files. Snapshots, working sheets, Excel copies and reports stay local.
+ai-service/data/**
+!ai-service/data/**/
+!ai-service/data/README.md
+!ai-service/data/labels/LABEL_GUIDE.md
+!ai-service/data/**/*.manifest.json
+!ai-service/data/labels/*.labels.csv
+!ai-service/data/splits/*.json
+ai-service/data/**/~$*
+ai-service/**/*.jsonl
+
+# Model weights and training checkpoints
 ai-service/models/
+ai-service/**/checkpoint-*/
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+ai-service/**/*.bin
 
 # IDE
 .vscode/

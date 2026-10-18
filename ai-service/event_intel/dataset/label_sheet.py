@@ -34,6 +34,7 @@ from .snapshot import load_snapshot
 
 TOOL = {"name": "label_sheet", "version": "1.0"}
 EXCERPT_CHARS = 2000
+METADATA_FAMILY_CAP = 2
 DEFAULT_OUT_DIR = Path(__file__).resolve().parents[2] / "data" / "labels"
 
 
@@ -78,7 +79,7 @@ def _cap_by_family(records: list[dict], cap: int, rng: random.Random) -> list[di
 
 
 def select_samples(records: list[dict], *, seed: int = 42, family_cap: int = 3, max_main: int | None = None,
-                   metadata_size: int = 40, metadata_family_cap: int = 2, agreement_size: int = 60) -> dict:
+                   metadata_size: int = 40, metadata_family_cap: int = METADATA_FAMILY_CAP, agreement_size: int = 60) -> dict:
     """Deterministic for the same snapshot and settings."""
     excluded: Counter = Counter()
 
@@ -142,10 +143,15 @@ def generate(snapshot_path: Path, out_dir: Path, version: str = "v1", annotator:
     paths = output_paths(Path(out_dir), version)
     ensure_new(*paths.values())
 
+    settings.setdefault("metadata_family_cap", METADATA_FAMILY_CAP)  # recorded in the manifest
     samples = select_samples(snapshot.records, **settings)
-    write_csv(paths["main"], SHEET_COLUMNS, [sheet_row(r, annotator) for r in samples["main"]])
-    write_csv(paths["metadata_review"], SHEET_COLUMNS, [sheet_row(r, annotator) for r in samples["metadata_review"]])
-    write_csv(paths["agreement_review"], SHEET_COLUMNS, [sheet_row(r) for r in samples["agreement_review"]])
+    if not samples["main"]:
+        raise DatasetError("The main sample is empty: check the snapshot and settings.")
+    # Empty optional sheets (e.g. --metadata-size 0 for a pilot) are not written.
+    for name in ("main", "metadata_review", "agreement_review"):
+        if samples[name]:
+            prefill = "" if name == "agreement_review" else annotator  # second reviewer adds their own
+            write_csv(paths[name], SHEET_COLUMNS, [sheet_row(r, prefill) for r in samples[name]])
 
     manifest = {
         "manifest_version": 1,
@@ -160,7 +166,7 @@ def generate(snapshot_path: Path, out_dir: Path, version: str = "v1", annotator:
         "pools": samples["pools"],
         "excluded": samples["excluded"],
         "sheets": {
-            name: {"file": paths[name].name, "rows": len(samples[name]),
+            name: {"file": paths[name].name if samples[name] else None, "rows": len(samples[name]),
                    "article_ids": [r["id"] for r in samples[name]]}
             for name in ("main", "metadata_review", "agreement_review")
         },
@@ -194,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  pools: {manifest['pools']}")
     print(f"  excluded: {manifest['excluded']}")
     for name, sheet in manifest["sheets"].items():
-        print(f"  {name}: {sheet['rows']} rows -> {result['paths'][name]}")
+        print(f"  {name}: {sheet['rows']} rows" + (f" -> {result['paths'][name]}" if sheet["file"] else " (not written)"))
     print(f"  manifest -> {result['paths']['manifest']}")
     return 0
 
