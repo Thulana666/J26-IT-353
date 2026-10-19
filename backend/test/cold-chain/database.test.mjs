@@ -232,6 +232,22 @@ describe("alerts and predictions", () => {
     const newest = await addPrediction(shipCol, "now()");
     assert.equal((await one("select id from cold_chain_latest_predictions where shipment_id = $1", [shipCol])).id, newest.id);
   });
+
+  test("trained predictions store the temperature and delay risk; a delay-only prediction has no fixed horizon", async () => {
+    const row = await one(
+      `insert into cold_chain_risk_predictions (shipment_id, pharmacy_id, model_name, model_version, is_prototype, risk_level, risk_probability,
+         explanation, horizon_minutes, readings_used, temperature_risk, delay_risk, details, predicted_at)
+       values ($1, (select pharmacy_id from cold_chain_shipments where shipment_id = $1), 'delay:logistic_regression', 'delay:v1', false, 'high', 0.82,
+         'test', null, 40, null, 0.82, '{"combination": {"method": "max"}}', now() + interval '1 minute')
+       returning *`,
+      [shipCol]
+    );
+    assert.equal(row.horizon_minutes, null);
+    const latest = await one("select temperature_risk, delay_risk, details from cold_chain_latest_predictions where shipment_id = $1", [shipCol]);
+    assert.deepEqual([latest.temperature_risk, Number(latest.delay_risk), latest.details.combination.method], [null, 0.82, "max"]);
+    await rejects(db.query("update cold_chain_risk_predictions set delay_risk = 1.5 where id = $1", [row.id]), /check constraint/);
+    assert.deepEqual((await addPrediction(shipCol, "now() + interval '2 minutes'")).details, {}, "prototype rows keep the defaults");
+  });
 });
 
 describe("row level security", () => {

@@ -114,8 +114,10 @@ test("the default provider is the prototype and labels every result as such", as
   const provider = getRiskProvider();
   const result = await provider.predict({ readings: series(5, () => ({})), limits: LIMITS, trip: trip(), destination: null, now: NOW });
   assert.deepEqual([result.modelName, result.modelVersion, result.isPrototype], ["prototype_rules", "0.1", true]);
-  process.env.COLD_CHAIN_RISK_MODEL = "cnn_lstm";
-  assert.equal(getRiskProvider().modelName, "cnn_lstm");
+  for (const setting of ["trained", "cnn_lstm"]) {
+    process.env.COLD_CHAIN_RISK_MODEL = setting;
+    assert.equal(getRiskProvider().modelName, "trained");
+  }
   delete process.env.COLD_CHAIN_RISK_MODEL;
 });
 

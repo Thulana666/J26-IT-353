@@ -12,26 +12,44 @@ const { getRiskProvider } = require("./provider");
 const { planPredictedAlerts } = require("./predicted-alerts");
 
 const MIN = 60_000;
-// Readings given to the predictor (the prototype uses the last hour).
-const WINDOW_MINUTES = 90;
+// Every reading since the trip started goes to the predictor: the trained
+// models' features (distance travelled, elapsed time, stop totals) are built
+// from the whole trip, as in training. The prototype looks at the recent part
+// itself (its trend and horizon windows).
+const PAGE = 1000;
+const MAX_READINGS = 20_000;
 
 const TRIP_SELECT =
   "shipment_id, trip_status, temp_min_c, temp_max_c, humidity_min_pct, humidity_max_pct, expected_delivery_at, " +
-  "reading_interval_seconds, trip_started_at, pharmacy:pharmacies(location:locations(latitude, longitude))";
+  "reading_interval_seconds, trip_started_at, started_at, pharmacy:pharmacies(location:locations(latitude, longitude)), " +
+  "shipment:shipments(warehouse:warehouses(location:locations(latitude, longitude)))";
+
+const point = (location) =>
+  location?.latitude != null && location?.longitude != null ? { latitude: num(location.latitude), longitude: num(location.longitude) } : null;
+
+async function tripReadings(shipmentId, since) {
+  const rows = [];
+  for (let from = 0; from < MAX_READINGS; from += PAGE) {
+    const page = unwrap(
+      await supabase
+        .from("cold_chain_readings")
+        .select("recorded_at, temperature_c, humidity_pct, latitude, longitude, speed_kmh, quality_flags")
+        .eq("shipment_id", shipmentId)
+        .gte("recorded_at", since)
+        .order("recorded_at", { ascending: true })
+        .range(from, from + PAGE - 1)
+    );
+    rows.push(...page);
+    if (page.length < PAGE) return rows;
+  }
+  console.warn(`[cold-chain] trip ${shipmentId} has more than ${MAX_READINGS} readings; only the first ${MAX_READINGS} are used`);
+  return rows;
+}
 
 async function loadInput(shipmentId, now) {
   const trip = unwrap(await supabase.from("cold_chain_shipments").select(TRIP_SELECT).eq("shipment_id", shipmentId).maybeSingle());
   if (!trip || trip.trip_status !== "in_transit") return null;
-  const rows = unwrap(
-    await supabase
-      .from("cold_chain_readings")
-      .select("recorded_at, temperature_c, humidity_pct, latitude, longitude, speed_kmh, quality_flags")
-      .eq("shipment_id", shipmentId)
-      .gte("recorded_at", new Date(now - WINDOW_MINUTES * MIN).toISOString())
-      .order("recorded_at", { ascending: true })
-      .limit(1000)
-  );
-  const location = trip.pharmacy?.location;
+  const rows = await tripReadings(shipmentId, trip.trip_started_at ?? trip.started_at);
   return {
     readings: rows.map((r) => ({
       recordedAt: Date.parse(r.recorded_at),
@@ -49,8 +67,9 @@ async function loadInput(shipmentId, now) {
       humidityMaxPct: num(trip.humidity_max_pct),
     },
     trip: { expectedDeliveryAt: trip.expected_delivery_at, startedAt: trip.trip_started_at, intervalSeconds: trip.reading_interval_seconds },
-    destination:
-      location?.latitude != null && location?.longitude != null ? { latitude: num(location.latitude), longitude: num(location.longitude) } : null,
+    destination: point(trip.pharmacy?.location),
+    // The dispatching warehouse: planned distance and progress for the delay model.
+    origin: point(trip.shipment?.warehouse?.location),
     now,
   };
 }
@@ -58,6 +77,8 @@ async function loadInput(shipmentId, now) {
 // Stores the prediction unless it repeats the last stored one (same level and
 // main risk type, probability within PREDICTION_STORE.minChange, less than
 // maxAgeMinutes old).
+const definedOnly = (values) => Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined && value !== null));
+
 async function storePrediction(shipmentId, prediction, now) {
   const last = unwrap(
     await supabase
@@ -90,6 +111,13 @@ async function storePrediction(shipmentId, prediction, now) {
       readings_used: prediction.readingsUsed,
       data_until: prediction.dataUntil,
       predicted_at: new Date(now).toISOString(),
+      // Trained-model columns (migration 20261019000000) are only written when
+      // set, so the prototype keeps working on a database without them.
+      ...definedOnly({
+        temperature_risk: prediction.temperatureRisk,
+        delay_risk: prediction.delayRisk,
+        details: prediction.details && Object.keys(prediction.details).length ? prediction.details : undefined,
+      }),
     })
   );
   return true;

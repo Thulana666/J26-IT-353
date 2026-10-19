@@ -82,6 +82,10 @@ function toPrediction(row) {
     riskType: row.risk_type,
     explanation: row.explanation,
     factors: row.factors ?? {},
+    // Trained models only (null for the prototype or before the migration).
+    temperatureRisk: num(row.temperature_risk),
+    delayRisk: num(row.delay_risk),
+    details: row.details ?? {},
     horizonMinutes: row.horizon_minutes,
     readingsUsed: row.readings_used,
     dataUntil: row.data_until,
