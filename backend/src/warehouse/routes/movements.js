@@ -4,7 +4,6 @@ const express = require("express");
 const store = require("../store");
 const { HttpError, unwrap } = require("../errors");
 const { rules, validate } = require("../validation");
-const { requireActive } = require("../auth");
 const { todayISO } = require("../dates");
 const { MOVEMENT_TYPES, ADMIN_ONLY_MOVEMENTS, validateMovementInput } = require("../movements");
 const { mapMovements, recordMovement } = require("../services");
@@ -45,7 +44,7 @@ router.get("/", async (req, res) => {
 
 // POST /api/warehouse/movements - receive, transfer, dispatch (FEFO-checked),
 // adjustment or disposal (admins).
-router.post("/", requireActive, async (req, res) => {
+router.post("/", async (req, res) => {
   const input = validateMovementInput(req.body);
   if (ADMIN_ONLY_MOVEMENTS.includes(input.movementType) && !req.user.isAdmin) {
     throw new HttpError(403, `Only admins can record a ${input.movementType}`);

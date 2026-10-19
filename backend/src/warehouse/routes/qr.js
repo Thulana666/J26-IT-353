@@ -4,24 +4,35 @@ const express = require("express");
 const store = require("../store");
 const { HttpError, unwrap } = require("../errors");
 const { rules, validate } = require("../validation");
-const { requireActive, requireAdmin } = require("../auth");
+const { requireAdmin } = require("../auth");
 const { todayISO } = require("../dates");
 const { parseQrInput } = require("../qr");
 const { toQrCode } = require("../mappers");
 const { getBatchDetail, rotateQrCode, withImage } = require("../services");
+const { recordScan } = require("../scans");
 
 const router = express.Router();
 const { supabase } = store;
 
 // POST /api/warehouse/qr/resolve { payload } - a scanned payload or a typed code.
 // 400 invalid format/check character, 404 unknown code, 410 deactivated code.
+// Every lookup is recorded in the scan history.
 router.post("/resolve", async (req, res) => {
-  const parsed = parseQrInput(req.body?.payload);
-  if (!parsed.ok) throw new HttpError(400, parsed.message, { reason: parsed.reason });
+  const payload = typeof req.body?.payload === "string" ? req.body.payload : "";
+  const scan = { purpose: "lookup", scannedCode: payload, userId: req.user.id };
+  const parsed = parseQrInput(payload);
+  if (!parsed.ok) {
+    await recordScan({ ...scan, result: "invalid", message: parsed.message });
+    throw new HttpError(400, parsed.message, { reason: parsed.reason });
+  }
 
   const row = unwrap(await supabase.from("batch_qr_codes").select("*").eq("code", parsed.code).maybeSingle());
-  if (!row) throw new HttpError(404, "This QR code is not registered in PharmaTwin", { reason: "not_found" });
+  if (!row) {
+    await recordScan({ ...scan, result: "not_found" });
+    throw new HttpError(404, "This QR code is not registered in PharmaTwin", { reason: "not_found" });
+  }
   if (!row.is_active) {
+    await recordScan({ ...scan, result: "inactive", batchId: row.batch_id });
     const replacement = unwrap(
       await supabase.from("batch_qr_codes").select("id").eq("batch_id", row.batch_id).eq("is_active", true).maybeSingle()
     );
@@ -33,6 +44,7 @@ router.post("/resolve", async (req, res) => {
     );
   }
 
+  await recordScan({ ...scan, result: "ok", batchId: row.batch_id });
   res.json({ scannedCode: row.code, ...(await getBatchDetail(row.batch_id, todayISO())) });
 });
 
@@ -51,7 +63,7 @@ router.get("/batch/:batchId", async (req, res) => {
 });
 
 // POST /api/warehouse/qr/batch/:batchId - issue a new label (deactivates the current one).
-router.post("/batch/:batchId", requireActive, async (req, res) => {
+router.post("/batch/:batchId", async (req, res) => {
   const { batchId } = validate(req.params, { batchId: rules.uuid({ required: true }) });
   res.status(201).json({ qr: await rotateQrCode(batchId, req.user.id) });
 });

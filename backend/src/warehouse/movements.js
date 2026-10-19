@@ -28,6 +28,8 @@ const movementSchema = {
   reference: rules.string({ max: 120 }),
   notes: rules.string({ max: 1000 }),
   fefoOverrideReason: rules.string({ min: 10, max: 500 }),
+  // Idempotency key from the form: a repeated submission records nothing new.
+  clientRequestId: rules.uuid(),
 };
 
 function validateMovementInput(body) {

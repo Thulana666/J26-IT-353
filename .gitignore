@@ -67,3 +67,5 @@ coverage/
 
 # Temporary files
 *.tmp
+# Cold-chain training data exports and processed datasets (Component 2)
+ai-service/cold_chain/data/
