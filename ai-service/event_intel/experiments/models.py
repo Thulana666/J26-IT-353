@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import importlib.util
+import json
 import math
 import os
 import random
@@ -298,10 +299,33 @@ class Transformer:
                     out.append(dict(zip(self.classes, row)))
         return out
 
-    def save(self, path: Path) -> None:  # pragma: no cover - writes ~330 MB
-        """Optional: write only the selected (best-epoch) weights."""
-        import torch
-        torch.save(self.model.state_dict(), path)
+    def save_checkpoint(self, directory: Path) -> dict:
+        """Write the selected (best-epoch) weights, tokenizer, config and class order to a new directory."""
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=False)  # never overwrite an existing checkpoint
+        self.model.save_pretrained(directory)
+        self.tokenizer.save_pretrained(directory)
+        meta = {"classes": [str(c) for c in self.classes],
+                "class_type": "int" if all(isinstance(c, int) for c in self.classes) else "str",
+                "base_model": TRANSFORMER_ID, "base_revision": TRANSFORMER_REVISION, "seed": self.seed,
+                "settings": self.settings, "best_epoch": self.best_epoch}
+        (directory / "classifier_meta.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+        return {"path": str(directory), "megabytes": round(sum(f.stat().st_size for f in directory.iterdir()) / 1e6, 1)}
+
+    @classmethod
+    def from_checkpoint(cls, directory: Path) -> "Transformer":
+        """Reload a saved checkpoint offline on CPU for inference."""
+        directory = Path(directory)
+        meta = json.loads((directory / "classifier_meta.json").read_text(encoding="utf-8"))
+        obj = cls.__new__(cls)
+        obj.seed, obj.settings, obj.best_epoch = meta["seed"], meta["settings"], meta["best_epoch"]
+        obj.history, obj.train_seconds = [], None
+        obj._setup()
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+        obj.tokenizer = AutoTokenizer.from_pretrained(directory, local_files_only=True)
+        obj.model = AutoModelForSequenceClassification.from_pretrained(directory, local_files_only=True).to("cpu")
+        obj.classes = [int(c) if meta["class_type"] == "int" else c for c in meta["classes"]]
+        return obj
 
     def config(self) -> dict:
         s = self.settings

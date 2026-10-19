@@ -62,6 +62,24 @@ class FilteringTests(unittest.TestCase):
         self.assertEqual(kinds["d"], "none")
 
 
+class AcceptedTierTests(unittest.TestCase):
+    def test_only_accepted_proposals_and_human_labels_enter_the_accepted_tier(self):
+        rows = [ex("h", "train"), ex("a", "train", status="proposed_high"), ex("m", "train", status="proposed_medium"),
+                ex("r", "train", status="manual_review")]
+        rows = [r if r.article_id != "a" else D.Example(**{**r.__dict__, "accepted": True}) for r in rows]
+        ids = {e.article_id for e in D.eligible(rows, "accepted", "train")}
+        self.assertEqual(ids, {"h", "a"})  # m not accepted, r manual review
+        kinds = {e.article_id: e.label_kind for e in rows}
+        self.assertEqual((kinds["h"], kinds["a"], kinds["m"]), (D.HUMAN, D.ACCEPTED, D.SILVER))
+
+    def test_accepted_ids_reads_only_accept_decisions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "accepted.csv"
+            path.write_text("article_id,human_decision\nx,accept\ny,\nz,reject\n", encoding="utf-8")
+            self.assertEqual(D.accepted_ids(path), {"x"})
+            self.assertEqual(D.accepted_ids(Path(tmp) / "missing.csv"), set())
+
+
 class LeakageTests(unittest.TestCase):
     def test_shared_group_is_rejected(self):
         with self.assertRaises(D.LeakageError):
@@ -245,6 +263,20 @@ class OfflineLoadTests(unittest.TestCase):
         self.assertAlmostEqual(sum(probs[0].values()), 1.0, places=4)
         import torch
         self.assertEqual(torch.get_num_threads(), 4)
+
+    @unittest.skipUnless(os.environ.get("EVENT_INTEL_HEAVY_TESTS") == "1", "writes a ~330 MB checkpoint; set EVENT_INTEL_HEAVY_TESTS=1")
+    def test_checkpoint_round_trip_gives_identical_predictions(self):
+        model = Transformer(seed=1)
+        with mock.patch.dict(os.environ, {"HF_HUB_OFFLINE": "1"}):
+            model.load(num_labels=3)
+        model.classes = ["natural_disaster", "other", "public_health"]
+        with tempfile.TemporaryDirectory() as tmp:
+            info = model.save_checkpoint(Path(tmp) / "ckpt")
+            self.assertGreater(info["megabytes"], 100)
+            with self.assertRaises(FileExistsError):
+                model.save_checkpoint(Path(tmp) / "ckpt")
+            check = R.verify_checkpoint(model, Path(tmp) / "ckpt", ["Floods in Ratnapura.", "Dengue cases rise in Colombo."])
+            self.assertTrue(check["passed"], check)
 
 
 if __name__ == "__main__":

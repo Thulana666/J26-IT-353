@@ -21,9 +21,12 @@ TIERS = {
     "confirmed": ("confirmed_human",),
     "confirmed_high": ("confirmed_human", "proposed_high"),
     "confirmed_high_medium": ("confirmed_human", "proposed_high", "proposed_medium"),
+    # Human pilot labels + AI proposals the researcher explicitly accepted (human_decision = accept).
+    "accepted": ("confirmed_human", "proposed_high", "proposed_medium"),
 }
 HUMAN = "human_confirmed"
 SILVER = "ai_proposed_silver"
+ACCEPTED = "ai_proposed_accepted"  # researcher-accepted AI proposal (bulk acceptance), not individually re-labelled
 RELEVANCE_BINARY = {"yes": 1, "possibly": 1, "no": 0}  # cannot_tell is excluded and counted
 
 
@@ -43,13 +46,14 @@ class Example:
     relevance: str | None
     text: str           # model input: title + the excerpt the labeller saw
     record: dict        # snapshot row for the rules baseline (read-only)
+    accepted: bool = False  # human_decision == accept in the accepted-labels file
 
     @property
     def label_kind(self) -> str:
         if self.label_status == "confirmed_human":
             return HUMAN
         if self.label_status.startswith("proposed_") and self.label_status != "proposed_duplicate":
-            return SILVER
+            return ACCEPTED if self.accepted else SILVER
         return "none"
 
 
@@ -57,8 +61,17 @@ def model_text(record: dict) -> str:
     return normalise_space((record.get("title") or "") + " . " + excerpt(record)[0])
 
 
-def load_examples(dataset_csv: Path | str, snapshot_jsonl: Path | str) -> list[Example]:
+def accepted_ids(accepted_csv: Path | str | None) -> set[str]:
+    """Article ids whose AI proposal the researcher accepted (human_decision = accept)."""
+    if not accepted_csv or not Path(accepted_csv).exists():
+        return set()
+    with Path(accepted_csv).open(encoding="utf-8-sig", newline="") as handle:
+        return {r["article_id"] for r in csv.DictReader(handle) if r["human_decision"].strip() == "accept"}
+
+
+def load_examples(dataset_csv: Path | str, snapshot_jsonl: Path | str, accepted_csv: Path | str | None = None) -> list[Example]:
     by_id = load_snapshot(snapshot_jsonl).by_id
+    accepted = accepted_ids(accepted_csv)
     examples = []
     with Path(dataset_csv).open(encoding="utf-8-sig", newline="") as handle:
         for row in csv.DictReader(handle):
@@ -70,7 +83,7 @@ def load_examples(dataset_csv: Path | str, snapshot_jsonl: Path | str) -> list[E
                 label_status=row["label_status"], exclusion_reason=row["exclusion_reason"],
                 text_sufficient=row["text_sufficient_any"],
                 category=row[f"category_{suffix}"] or None, relevance=row[f"relevance_{suffix}"] or None,
-                text=model_text(record), record=record))
+                text=model_text(record), record=record, accepted=row["article_id"] in accepted))
     return examples
 
 
@@ -80,6 +93,8 @@ def eligible(examples: list[Example], tier: str, split: str, field: str = "categ
     out = []
     for e in examples:
         if e.split != split or e.label_status not in statuses or e.exclusion_reason or e.text_sufficient != "yes":
+            continue
+        if tier == "accepted" and e.label_kind not in (HUMAN, ACCEPTED):
             continue
         if field == "category" and e.category not in SUPPORTED_CATEGORIES:
             continue

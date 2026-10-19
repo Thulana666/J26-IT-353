@@ -36,6 +36,7 @@ from .models import (InsufficientResources, MissingDependency, NaiveBayes, Trans
 ROOT = Path(__file__).resolve().parents[2]
 DATASET = ROOT / "data/dataset_v1/event_dataset_v1.csv"
 PROPOSALS = ROOT / "data/dataset_v1/ai_proposed_labels_v1.csv"
+ACCEPTED_LABELS = ROOT / "data/dataset_v1/ai_proposed_labels_v1.accepted.csv"
 SPLIT = ROOT / "data/dataset_v1/split_prelim_v1.json"
 SNAPSHOT = ROOT / "data/snapshots/articles_20261018T122253Z.jsonl"
 OUT = ROOT / "data/experiments"
@@ -85,19 +86,42 @@ def fit_and_select(kind, train, val, field, labels, seed: int = 42):
     return best[1], best[2], log
 
 
-def evaluate_category(examples, kind, tier, seed=42):
+def verify_checkpoint(model, directory: Path, texts: list[str]) -> dict:
+    """Reload the saved checkpoint offline and compare it with the in-memory best model on validation texts."""
+    reloaded = Transformer.from_checkpoint(directory)
+    a, b = model.predict_proba(texts), reloaded.predict_proba(texts)
+    diff = max(abs(x[c] - y[c]) for x, y in zip(a, b) for c in x)
+    same = [max(x, key=x.get) for x in a] == [max(y, key=y.get) for y in b]
+    del reloaded
+    return {"sample": "first validation articles", "sample_size": len(texts), "max_abs_probability_difference": diff,
+            "same_predictions": same, "passed": same and diff < 1e-4}
+
+
+def evaluate_category(examples, kind, tier, seed=42, out: Path | None = None):
     labels = list(D.SUPPORTED_CATEGORIES)
     train, val = D.eligible(examples, tier, "train"), D.eligible(examples, tier, "validation")
     test_human = D.eligible(examples, "confirmed", "test")
-    test_silver = [e for e in D.eligible(examples, tier, "test") if e.label_kind == D.SILVER]
+    ai_kind = D.ACCEPTED if tier == "accepted" else D.SILVER
+    test_ai = [e for e in D.eligible(examples, tier, "test") if e.label_kind == ai_kind]
     D.assert_disjoint(train, val)
-    D.assert_disjoint(train + val, test_human + test_silver)
+    D.assert_disjoint(train + val, test_human + test_ai)
 
+    # Model selection (epoch / alpha) and the hybrid threshold use validation only.
     model, val_probs, selection = fit_and_select(kind, train, val, "category", labels, seed)
     threshold, threshold_log = select_threshold([e.record for e in val], val_probs,
                                                 [e.category for e in val], macro_f1(labels))
+    checkpoint = None
+    if kind == "transformer" and out is not None:
+        checkpoint = model.save_checkpoint(out / "checkpoint_category")
+        checkpoint["verification"] = verify_checkpoint(model, out / "checkpoint_category", [e.text for e in val[:8]])
+        if not checkpoint["verification"]["passed"]:
+            raise RuntimeError(f"Checkpoint reload check failed: {checkpoint['verification']}")
+    sets = [("validation_" + tier, val), ("test_human_confirmed", test_human),
+            ("test_accepted_ai" if tier == "accepted" else "test_ai_silver", test_ai)]
+    if tier == "accepted":
+        sets.append(("test_all_reference", test_human + test_ai))
     results, predictions = {}, []
-    for name, rows in (("validation_" + tier, val), ("test_human_confirmed", test_human), ("test_ai_silver", test_silver)):
+    for name, rows in sets:
         if not rows:
             results[name] = {"n": 0}
             continue
@@ -111,6 +135,8 @@ def evaluate_category(examples, kind, tier, seed=42):
             "n": len(rows), "label_kind": sorted({e.label_kind for e in rows}),
             "systems": {k: report(g, v, labels) for k, v in systems.items()},
             "hybrid_methods": {m: sum(1 for h in hyb if h.method == m) for m in sorted({h.method for h in hyb})},
+            "hybrid_needs_review": sum(1 for h in hyb if h.needs_review),
+            "hybrid_differs_from_model": sum(1 for h, p in zip(hyb, probs) if h.category != max(p, key=p.get)),
             "bootstrap_macro_f1": bootstrap(g, systems, macro_f1(labels)),
             "bootstrap_accuracy": bootstrap(g, systems, accuracy),
             "descriptive_only": min(g.count(c) for c in labels) < MIN_TEST_PER_CLASS,
@@ -122,7 +148,8 @@ def evaluate_category(examples, kind, tier, seed=42):
                                 "hybrid": h.category, "hybrid_method": h.method, "hybrid_needs_review": h.needs_review,
                                 "hybrid_evidence": "; ".join(h.evidence)})
     meta = {"train_n": len(train), "train_label_kind": dict(_kinds(train)), "train_distribution": _dist(train, "category"),
-            "validation_n": len(val), "selection": selection, "model_config": model.config(),
+            "validation_n": len(val), "test_n": {"human_confirmed": len(test_human), ai_kind: len(test_ai)},
+            "selection": selection, "model_config": model.config(), "checkpoint": checkpoint,
             "hybrid_threshold": threshold, "threshold_validation_macro_f1": {str(k): round(v, 4) for k, v in threshold_log.items()}}
     return meta, results, predictions
 
@@ -201,7 +228,7 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     env = environment()
-    examples = D.load_examples(DATASET, SNAPSHOT)
+    examples = D.load_examples(DATASET, SNAPSHOT, ACCEPTED_LABELS)
     audit = D.audit(examples)  # raises LeakageError on any cross-split overlap
     if args.audit_only:
         print(json.dumps({"environment": env, "audit": audit}, indent=1))
@@ -218,35 +245,41 @@ def main(argv=None) -> int:
     cat_meta = cat_results = rel_meta = rel_results = None
     cat_pred, rel_pred = [], []
     if args.task in ("category", "both"):
-        cat_meta, cat_results, cat_pred = evaluate_category(examples, args.model, args.tier, args.seed)
+        cat_meta, cat_results, cat_pred = evaluate_category(examples, args.model, args.tier, args.seed, out)
     if args.task in ("relevance", "both"):
         rel_meta, rel_results, rel_pred = evaluate_relevance(examples, args.model, args.tier, args.seed)
     run = {
         "run_id": run_id, "created_at": utc_now(), "model_kind": args.model, "tier": args.tier,
         "task": args.task, "seed": args.seed,
         "tier_label_statuses": D.TIERS[args.tier],
-        "training_labels_note": ("human-confirmed only" if args.tier == "confirmed" else
-                                 "SILVER-LABEL EXPERIMENT: training includes AI-proposed labels that are not human-confirmed"),
+        "training_labels_note": {
+            "confirmed": "human-confirmed only",
+            "accepted": "human pilot labels + researcher-accepted AI proposals (bulk acceptance, see label_acceptance_log_v1.json)",
+        }.get(args.tier, "SILVER-LABEL EXPERIMENT: training includes AI-proposed labels that are not human-confirmed"),
         "supported_categories": D.SUPPORTED_CATEGORIES, "unsupported_categories_not_trained": D.UNSUPPORTED_CATEGORIES,
         "rules_baseline": {"name": RULES_NAME, "version": RULES_VERSION}, "guide_version": GUIDE_VERSION,
-        "inputs": {p.name: file_sha256(p) for p in (DATASET, PROPOSALS, SPLIT, SNAPSHOT)},
+        "inputs": {p.name: file_sha256(p) for p in (DATASET, PROPOSALS, ACCEPTED_LABELS, SPLIT, SNAPSHOT) if p.exists()},
         "environment": {**env, "platform": platform.platform()}, "package_versions": package_versions(),
         "git": git_state(),
         "seeds": {"training": args.seed, "bootstrap": 2026, "split": "fixed: split_prelim_v1.json (seed 42), not reseeded"},
         "category": cat_meta, "relevance": rel_meta, "total_seconds": round(time.perf_counter() - t0, 2),
     }
     (out / "run.json").write_text(json.dumps(run, indent=1), encoding="utf-8")
-    (out / "metrics.json").write_text(json.dumps({"seed": args.seed, "audit": audit, "category": cat_results,
-                                                  "relevance": rel_results}, indent=1), encoding="utf-8")
-    write_csv(out / "predictions_category.csv", cat_pred)
-    write_csv(out / "predictions_relevance.csv", rel_pred)
-    print(f"{run_id}: {round(time.perf_counter() - t0, 1)} s -> {out}")
+    # Validation (selection) and test (evaluation) outputs are written to separate files.
+    for part, keep in (("validation", lambda k: k.startswith("validation")), ("test", lambda k: k.startswith("test"))):
+        (out / f"metrics_{part}.json").write_text(json.dumps({
+            "seed": args.seed, "audit": audit if part == "validation" else None,
+            "category": {k: v for k, v in (cat_results or {}).items() if keep(k)},
+            "relevance": {k: v for k, v in (rel_results or {}).items() if keep(k)}}, indent=1), encoding="utf-8")
+        write_csv(out / f"predictions_category_{part}.csv", [p for p in cat_pred if keep(p["evaluation_set"])])
+        write_csv(out / f"predictions_relevance_{part}.csv", [p for p in rel_pred if keep(p["evaluation_set"])])
+    print(f"{run_id}: {round(time.perf_counter() - t0, 1)} s -> {out} (test results written to *_test files, not printed)")
     for name, res in (cat_results or {}).items():
-        if res.get("n"):
+        if res.get("n") and name.startswith("validation"):
             print(f"  category {name} (n={res['n']}): " + ", ".join(
                 f"{k} macroF1 {v['macro']['f1']:.3f} acc {v['accuracy']:.3f}" for k, v in res["systems"].items()))
     for name, res in (rel_results or {}).items():
-        if res.get("n"):
+        if res.get("n") and name.startswith("validation"):
             print(f"  relevance {name} (n={res['n']}): " + ", ".join(
                 f"{k} macroF1 {v['macro']['f1']:.3f}" for k, v in res["systems"].items()))
     return 0
