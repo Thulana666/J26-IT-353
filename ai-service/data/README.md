@@ -35,7 +35,7 @@ v1 main sheet, so pilot labels can be carried over after the guide is revised.
 |---|---|---|
 | `snapshots/articles_<UTC>.jsonl` | Raw `event_articles` rows, sorted by id | **No**: full article text, and the repository is public |
 | `snapshots/articles_<UTC>.manifest.json` | Row count, SHA-256, fields, git commit (no credentials) | Yes |
-| `labels/LABEL_GUIDE.md` | Label guide v1.0 | Yes |
+| `labels/LABEL_GUIDE.md` | Label guide v1.1 (v1.0 in Git history) | Yes |
 | `labels/*.sheet.csv` (and any other copy, e.g. `.xlsx`) | Working sheets with ≤2,000-character excerpts | **No**: back them up privately |
 | `labels/*_v1.labels.csv` | Labels-only export: ids, URLs, titles, labels, short evidence quotes | Yes |
 | `labels/label_sheets_v1.manifest.json` | Sampling settings, seed, snapshot hash, article ids per sheet | Yes |

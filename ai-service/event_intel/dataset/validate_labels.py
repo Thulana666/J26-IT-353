@@ -1,4 +1,4 @@
-"""Check a label sheet against label guide v1.0. Never modifies the sheet.
+"""Check a label sheet against label guide v1.1. Never modifies the sheet.
 
     python -m event_intel.dataset.validate_labels data/labels/article_labels_v1.sheet.csv \
         --snapshot data/snapshots/articles_<UTC>.jsonl [--export data/labels/article_labels_v1.labels.csv]
@@ -211,8 +211,13 @@ def validate_rows(columns: list[str], rows: list[dict], file: str = "",
             add("warning", line, article_id, "category", "Flag no_actual_event but category is not 'other'.")
         if "metadata_only" in flags and values["text_sufficient"] == "yes":
             add("warning", line, article_id, "text_sufficient", "Flag metadata_only but text_sufficient is yes.")
-        if values["category"] == "other" and values["relevance"] in ("yes", "possibly"):
-            add("warning", line, article_id, "relevance", "Category 'other' (no event) but relevance is yes/possibly.")
+        # Guide 1.1: 'other' + 'possibly' is valid (Decision O2 medicine donations, O6 indirect
+        # health links). 'yes' needs a health event, disaster or documented supply problem in
+        # Sri Lanka, which always has its own category.
+        if values["category"] == "other" and values["relevance"] == "yes":
+            add("warning", line, article_id, "relevance",
+                "Category 'other' but relevance is yes: under guide 1.1 'yes' needs a health event, "
+                "disaster or documented medicine supply problem, which has its own category.")
 
         status = "labelled" if len(report.errors) == errors_before else "invalid"
         report.rows.append(LabelRow(line, article_id, status, values))

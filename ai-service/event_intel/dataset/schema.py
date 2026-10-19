@@ -1,4 +1,4 @@
-"""Label-sheet columns and allowed values (label guide v1.0).
+"""Label-sheet columns and allowed values (label guide v1.1).
 
 Category, scope and text-sufficiency values use the same keys as the rules
 baseline so every field can be compared directly. The guide itself is
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..lexicons import CATEGORY_LABELS
 
-GUIDE_VERSION = "1.0"
+GUIDE_VERSION = "1.1"  # rows with an older guide_version are rejected until re-reviewed under 1.1
 
 CATEGORIES = tuple(CATEGORY_LABELS)  # the original six; never merged in the source labels
 RELEVANCE = ("yes", "possibly", "no", "cannot_tell")

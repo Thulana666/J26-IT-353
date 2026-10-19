@@ -263,6 +263,40 @@ class ValidatorTests(unittest.TestCase):
         binary = self.validate(rows).summary()["binary_relevance"]
         self.assertEqual(binary, {"positive_yes_or_possibly": 0, "negative_no": 1, "excluded_cannot_tell": 1})
 
+    def test_guide_version_1_1_is_accepted(self):
+        self.assertEqual(GUIDE_VERSION, "1.1")
+        rows = [labelled(self.rows[0], category="public_health", relevance="yes", scope="sri_lanka",
+                         text_sufficient="yes", evidence="Dengue cases rose in Colombo", guide_version="1.1")]
+        self.assertEqual(self.validate(rows).errors, [])
+
+    def test_unsupported_guide_versions_are_rejected(self):
+        for version in ("1.0", "1", "2.0", ""):
+            rows = [labelled(self.rows[0], category="public_health", relevance="yes", scope="sri_lanka",
+                             text_sufficient="yes", evidence="Dengue cases rose in Colombo", guide_version=version)]
+            errors = self.validate(rows).errors
+            self.assertEqual([e.column for e in errors], ["guide_version"], version)
+
+    def test_other_with_possibly_is_valid_under_guide_1_1(self):
+        # Decision O2 (medicine donation, no documented shortage) and O6 (explicit indirect health link).
+        rows = [labelled(self.rows[0], category="other", relevance="possibly", scope="sri_lanka",
+                         text_sufficient="yes", evidence="Dengue cases rose in Colombo", flags="no_actual_event"),
+                labelled(self.rows[2], category="other", relevance="possibly", scope="sri_lanka",
+                         text_sufficient="yes", evidence="Floods affected 1,200 families")]
+        report = self.validate(rows)
+        self.assertEqual(report.errors, [])
+        self.assertEqual(report.warnings, [])
+
+    def test_other_with_possibly_still_needs_evidence(self):
+        rows = [labelled(self.rows[0], category="other", relevance="possibly", scope="sri_lanka", text_sufficient="yes")]
+        self.assertIn("Evidence quote required", " ".join(i.message for i in self.validate(rows).errors))
+
+    def test_other_with_yes_still_warns(self):
+        rows = [labelled(self.rows[0], category="other", relevance="yes", scope="sri_lanka",
+                         text_sufficient="yes", evidence="Dengue cases rose in Colombo")]
+        report = self.validate(rows)
+        self.assertEqual(report.errors, [])
+        self.assertEqual([w.column for w in report.warnings], ["relevance"])
+
     def test_duplicate_rows_need_no_core_labels(self):
         rows = [labelled(self.rows[0], flags="duplicate", notes="same as a13")]
         report = self.validate(rows)
