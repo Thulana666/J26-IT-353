@@ -269,14 +269,7 @@ export const dashboardNav = [
         icon: "bell",
         roles: PHARMACY_ROLES,
         description: "Low stock, reorder, near-expiry and expired stock.",
-      },
-      {
-        title: "Research",
-        href: "/dashboard/pharmacy/research",
-        icon: "chart-column-increasing",
-        roles: PHARMACY_ROLES,
-        description: "Actual vs estimated demand, stockouts, expiry, turnover and recommendation acceptance.",
-      },
+      },
       {
         title: "Settings",
         href: "/dashboard/pharmacy/settings",

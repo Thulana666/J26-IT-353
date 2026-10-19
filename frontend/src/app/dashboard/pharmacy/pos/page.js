@@ -2,7 +2,6 @@ import { pharmacyApi } from "@/lib/pharmacy/api";
 import { getPharmacyContext, safe } from "@/lib/pharmacy/page-data";
 import { PAYMENT_METHODS, formatDateTime, formatMoney } from "@/lib/pharmacy/format";
 import { PageHeader } from "@/components/dashboard/page-header";
-import { SyntheticBadge } from "@/components/pharmacy/badges";
 import { PosTerminal } from "@/components/pharmacy/pos-terminal";
 import { LoadError } from "@/components/pharmacy/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,7 +31,7 @@ export default async function PosPage() {
             </CardHeader>
             <CardContent className="px-0">
               {sales.sales.length === 0 ? (
-                <p className="px-4 text-sm text-muted-foreground">No POS sales yet{" "}<SyntheticBadge>Seeded history is not listed here</SyntheticBadge></p>
+                <p className="px-4 text-sm text-muted-foreground">No POS sales yet.</p>
               ) : (
                 <Table>
                   <TableHeader>

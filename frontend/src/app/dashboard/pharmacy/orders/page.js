@@ -25,7 +25,7 @@ export default async function OrdersPage() {
   return (
     <>
       <PharmacyRealtime tables={["purchase_orders", "reorder_recommendations"]} />
-      <PageHeader title="Orders" description="Order stock from the warehouse. Quantities start from the rule-based reorder recommendations (Q*)." mock={false}>
+      <PageHeader title="Orders" description="Order stock from the warehouse." mock={false}>
         <RunForecastButton variant="outline" label="Refresh recommendations" />
       </PageHeader>
       {error || recError ? (
@@ -35,10 +35,7 @@ export default async function OrdersPage() {
           <Card>
             <CardHeader>
               <CardTitle>New order</CardTitle>
-              <CardDescription>
-                Recommended Q* = max(0, target stock − inventory position), rounded to whole packs (a rule-based order-up-to quantity, not the
-                classical EOQ formula). Products at their reorder point are pre-selected. Accepting, editing or rejecting a line is recorded.
-              </CardDescription>
+              <CardDescription>Recommended quantities are pre-filled. Tick the products to order and adjust the packs if needed.</CardDescription>
             </CardHeader>
             <CardContent>
               {/* Remount when the recommendations change (recalculation or decisions). */}
