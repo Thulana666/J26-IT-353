@@ -159,9 +159,16 @@ Output: `riskLevel` (low < 0.3 ≤ medium < 0.7 ≤ high), `riskProbability`,
   jumps), combined `1 − Π(1 − p)`. Its scores are heuristics, not calibrated
   probabilities, and are never reported as model results.
 - **Interface**: `backend/src/cold-chain/risk/provider.js`. With
-  `COLD_CHAIN_RISK_MODEL=cnn_lstm` the backend calls the AI service instead;
-  until the model is trained that answers 501 and no prediction is stored
-  (no silent fallback).
+  `COLD_CHAIN_RISK_MODEL=trained` the backend sends every reading since the
+  trip started, the limits, the planned delivery time, the warehouse (origin)
+  and the pharmacy (destination) to the AI service (`AI_SERVICE_URL`, default
+  `http://localhost:8000`), which answers with the trained models'
+  `temperatureRisk`, `delayRisk` and their combination. They are stored in
+  `temperature_risk`, `delay_risk` and `details` (components, combination,
+  data cleaning). When the AI service has no trained model (501), cannot
+  estimate a risk yet (422, e.g. the trip just started) or is unreachable, the
+  prototype answers instead, still labelled as the prototype, with the reason
+  in `details.fallback`: a rule-based result is never shown as a trained one.
 - **Predicted alerts**: one per risk type, opened at 60 % (high from 80 %),
   resolved below 40 %; combined risk from 70 %. Messages give the probability
   and the predictor ("Predicted risk 82 % (prototype rule-based predictor)").
@@ -169,16 +176,30 @@ Output: `riskLevel` (low < 0.3 ≤ medium < 0.7 ≤ high), `riskProbability`,
 - Predictions are stored when the level changes, the probability moves ≥ 5
   points, or 5 minutes passed (a time series for later evaluation).
 
-## CNN-LSTM (not trained)
+## Trained models (not trained on real data yet)
 
-`ai-service/cold_chain/`: `preprocessing.py` turns readings into a 60 × 9
-sequence (temperature relative to the limits, humidity, speed, time of day,
-time to ETA, distance to the pharmacy, GPS-jump flag, measured-step mask);
-`model.py` defines Conv1d → LSTM → probability; `training/train.py` trains on
-a CSV export of **real** trips (test shipments excluded), splits by trip and
-writes the measured precision, recall, F1 and ROC-AUC to
-`models/metrics.json`. Install `requirements-training.txt` to train. No model,
-weights or results exist yet.
+`ai-service/cold_chain/` holds the full pipeline; `cold_chain/models/README.md`
+lists the commands. In short:
+
+1. `backend/scripts/export-cold-chain-dataset.js` exports real trips and
+   readings (test shipments excluded by default, no personal data) with a
+   dataset version; the planned delivery time is the one in effect when the
+   trip started (audit log).
+2. `training/build_dataset.py`: cleaning (every change counted), 1-minute grid
+   features without look-ahead, labels (excursion of the shipment's own limits
+   within the horizon; delivery after the planned time) and a chronological,
+   trip-level train/validation/test split.
+3. Temperature excursion: baselines (logistic regression, random forest,
+   gradient boosting) and the CNN-LSTM, compared on validation
+   (`training/compare.py`). Delivery delay: baselines and tuned gradient
+   boosting, every trip weighted the same (`training/delay.py`).
+4. `training/install.py` installs the selected models; the AI service refuses
+   models trained on test/simulated data. `cold_chain/risk.py` combines the two
+   risks (`max` by default; configurable, documented as a design choice).
+
+Outputs of test or simulated data are labelled "PIPELINE CHECK ONLY". No
+model has been trained on real data and no results exist yet: real trips with
+sensor data are needed first.
 
 ## Development and testing
 
@@ -194,14 +215,19 @@ From `backend/`, with the backend running:
   simulator device (set it up in Cold Chain: create a test shipment, allocate
   a truck with e.g. SIM-001, start). Scenarios: normal, rising, excursion,
   humidity, gps-jump.
+- `node --env-file=.env scripts/export-cold-chain-dataset.js [--include-test]`:
+  training data export for the AI pipeline (see Trained models).
 - `npm test` (backend), `.venv/Scripts/python -m unittest discover tests` (ai-service).
 
 ## Setup
 
-1. Apply both cold-chain migrations (after the pharmacy and warehouse ones),
-   then `notify pgrst, 'reload schema';`.
+1. Apply the cold-chain migrations in order (after the pharmacy and
+   warehouse ones; `20261019000000_cold_chain_trained_risk.sql` before using
+   trained models), then `notify pgrst, 'reload schema';`.
 2. Backend env (optional): `COLD_CHAIN_RISK_INTERVAL_MINUTES` (default 5),
-   `COLD_CHAIN_RISK_MODEL` (default `prototype`).
+   `COLD_CHAIN_RISK_MODEL` (`prototype` default, or `trained`), `AI_SERVICE_URL`.
+   The AI service needs `requirements-training.txt` installed to serve trained
+   models.
 3. In Cold Chain: register sensors (Devices, admin; key shown once), add
    drivers and trucks (install a sensor in each truck), then create, allocate,
    start and deliver shipments from their pages.
