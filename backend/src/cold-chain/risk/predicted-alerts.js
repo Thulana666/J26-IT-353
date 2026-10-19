@@ -21,7 +21,8 @@ const TITLES = {
 const percent = (p) => `${Math.round(p * 100)}%`;
 
 function modelLabel(prediction) {
-  return prediction.isPrototype ? "prototype rule-based predictor" : `${prediction.modelName} ${prediction.modelVersion ?? ""}`.trim();
+  // The model version stays in the alert details (it is long for combined models).
+  return prediction.isPrototype ? "prototype rule-based predictor" : `trained model ${prediction.modelName}`;
 }
 
 // prediction: provider output. openAlerts: the shipment's unresolved predicted

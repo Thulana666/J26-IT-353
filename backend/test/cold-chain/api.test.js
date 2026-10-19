@@ -76,7 +76,7 @@ const monitor = (overrides = {}) => ({
 
 // A device-side world: the device, its assignments, readings already stored
 // (by recorded_at ISO), the newest stored reading and an optional alert failure.
-function deviceWorld({ device = DEVICE, monitors = [monitor()], stored = [], latest = null, alertsError = null } = {}) {
+function deviceWorld({ device = DEVICE, monitors = [monitor()], stored = [], latest = null, alertsError = null, trip = {}, history = [] } = {}) {
   log.length = 0;
   respond = (q) => {
     if (q.table === "cold_chain_devices" && q.op === "select") {
@@ -86,7 +86,7 @@ function deviceWorld({ device = DEVICE, monitors = [monitor()], stored = [], lat
     if (q.table === "cold_chain_shipments" && q.single === "maybe") {
       const [m] = monitors;
       return {
-        data: m && { ...m, expected_delivery_at: null, trip_started_at: iso(Date.now() - 2 * MIN), pharmacy: { location: null } },
+        data: m && { ...m, expected_delivery_at: null, trip_started_at: iso(Date.now() - 2 * MIN), pharmacy: { location: null }, ...trip },
         error: null,
       };
     }
@@ -98,7 +98,7 @@ function deviceWorld({ device = DEVICE, monitors = [monitor()], stored = [], lat
       return { data: inserted.map((row, i) => ({ id: i + 1, recorded_at: row.recorded_at.replace("Z", "+00:00") })), error: null };
     }
     if (q.table === "cold_chain_readings" && q.op === "select" && filterValue(q, "gte", "recorded_at")) {
-      return { data: [], error: null };
+      return { data: history, error: null };
     }
     if (q.table === "cold_chain_readings" && q.op === "select") {
       return { data: filterValue(q, "lt", "recorded_at") ? null : latest, error: null };
@@ -110,6 +110,82 @@ function deviceWorld({ device = DEVICE, monitors = [monitor()], stored = [], lat
     throw new Error(`unexpected query: ${q.op} ${q.table}`);
   };
 }
+
+describe("trained risk model (COLD_CHAIN_RISK_MODEL=trained)", () => {
+  const http = require("node:http");
+  const TRIP_START = Date.now() - 45 * MIN;
+  const TRAINED = {
+    riskLevel: "high", riskProbability: 0.82, riskType: "delivery_delay", temperatureRisk: 0.12, delayRisk: 0.82,
+    explanation: "Overall HIGH risk (max of the estimated risks).",
+    factors: { delivery_delay: { probability: 0.82, explanation: "Delivery: 82% estimated risk", details: {} } },
+    components: { delay: { available: true } }, combination: { method: "max" }, cleaning: { input: 3 },
+    horizonMinutes: 30, readingsUsed: 3, dataUntil: iso(Date.now()), modelName: "temperature:random_forest+delay:logistic_regression", modelVersion: "v1",
+  };
+  let ai;
+  let reply;
+  let received;
+  before(async () => {
+    ai = http.createServer((req, res) => {
+      let data = "";
+      req.on("data", (chunk) => (data += chunk));
+      req.on("end", () => {
+        received = JSON.parse(data);
+        res.writeHead(reply.status, { "content-type": "application/json" });
+        res.end(JSON.stringify(reply.body));
+      });
+    });
+    await new Promise((resolve) => ai.listen(0, "127.0.0.1", resolve));
+    process.env.AI_SERVICE_URL = `http://127.0.0.1:${ai.address().port}`;
+    process.env.COLD_CHAIN_RISK_MODEL = "trained";
+  });
+  after(() => {
+    delete process.env.COLD_CHAIN_RISK_MODEL;
+    delete process.env.AI_SERVICE_URL;
+    ai.close();
+  });
+
+  const world = () =>
+    deviceWorld({
+      trip: {
+        trip_started_at: iso(TRIP_START),
+        expected_delivery_at: iso(TRIP_START + 90 * MIN),
+        pharmacy: { location: { latitude: "7.290600", longitude: "80.633700" } },
+        shipment: { warehouse: { location: { latitude: "6.949700", longitude: "79.922000" } } },
+      },
+      history: [0, 20, 40].map((m) => ({ recorded_at: iso(TRIP_START + m * MIN), temperature_c: "5.00", humidity_pct: null, latitude: null, longitude: null, speed_kmh: "40.00", quality_flags: [] })),
+    });
+
+  test("the whole trip and the route go to the AI service; its risks are stored", async () => {
+    reply = { status: 200, body: TRAINED };
+    world();
+    const { status, body } = await postReadings({ recordedAt: iso(Date.now() - MIN), temperatureC: 5 });
+    assert.equal(status, 201);
+    assert.equal(body.risk.isPrototype, false);
+    const [history] = queries("cold_chain_readings", "select").filter((q) => filterValue(q, "gte", "recorded_at"));
+    assert.equal(filterValue(history, "gte", "recorded_at"), iso(TRIP_START), "readings since the trip started, not a recent window");
+    assert.equal(received.readings.length, 3);
+    assert.deepEqual(received.origin, { latitude: 6.9497, longitude: 79.922 });
+    assert.deepEqual(received.destination, { latitude: 7.2906, longitude: 80.6337 });
+    const [insert] = queries("cold_chain_risk_predictions", "insert");
+    assert.deepEqual(
+      [insert.payload.is_prototype, insert.payload.model_name, insert.payload.temperature_risk, insert.payload.delay_risk, insert.payload.horizon_minutes],
+      [false, TRAINED.modelName, 0.12, 0.82, 30]
+    );
+    assert.deepEqual(insert.payload.details, { components: TRAINED.components, combination: TRAINED.combination, cleaning: TRAINED.cleaning });
+  });
+
+  test("without a trained model the prototype answers, labelled, with the reason", async () => {
+    reply = { status: 501, body: { detail: "No trained cold-chain model is installed" } };
+    world();
+    const { status, body } = await postReadings({ recordedAt: iso(Date.now() - MIN), temperatureC: 5 });
+    assert.equal(status, 201);
+    assert.equal(body.risk.isPrototype, true);
+    const [insert] = queries("cold_chain_risk_predictions", "insert");
+    assert.deepEqual([insert.payload.is_prototype, insert.payload.model_name], [true, "prototype_rules"]);
+    assert.equal(insert.payload.details.fallback.reason, "no_trained_model");
+    assert.ok(!("temperature_risk" in insert.payload) && !("delay_risk" in insert.payload), "no trained-model risk is stored");
+  });
+});
 
 describe("device keys", () => {
   test("keys are random, prefixed and stored only as a SHA-256 hash", () => {

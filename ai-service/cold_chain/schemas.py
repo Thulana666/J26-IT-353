@@ -42,27 +42,41 @@ class TripIn(CamelModel):
     interval_seconds: int = 60
 
 
-class DestinationIn(CamelModel):
-    latitude: float
-    longitude: float
+class PointIn(CamelModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+DestinationIn = PointIn
 
 
 class PredictRequest(CamelModel):
+    # All readings since the trip started: distance travelled, elapsed time and
+    # stop totals are computed from them, as in training.
     readings: list[ReadingIn]
     limits: LimitsIn
     trip: TripIn
-    destination: DestinationIn | None = None
+    destination: PointIn | None = None
+    origin: PointIn | None = None
     now: datetime
 
 
 class PredictResponse(CamelModel):
+    """riskProbability is the combined risk (risk.py); temperatureRisk and
+    delayRisk are the model outputs (None when not estimated, see components)."""
+
     risk_level: Literal["low", "medium", "high"]
     risk_probability: float = Field(ge=0, le=1)
     risk_type: RiskType | None
+    temperature_risk: float | None = Field(None, ge=0, le=1)
+    delay_risk: float | None = Field(None, ge=0, le=1)
     explanation: str
     factors: dict = {}
-    horizon_minutes: int
+    components: dict = {}
+    combination: dict = {}
+    horizon_minutes: int | None
     readings_used: int
     data_until: datetime | None
-    model_name: str = "cnn_lstm"
+    cleaning: dict = {}
+    model_name: str
     model_version: str

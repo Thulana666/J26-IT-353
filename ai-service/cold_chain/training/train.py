@@ -1,156 +1,285 @@
-"""Train and evaluate the cold-chain CNN-LSTM (needs requirements-training.txt).
+"""Train and evaluate the cold-chain CNN-LSTM (temperature-excursion risk).
 
-Input: a CSV of real sensor readings exported from Supabase, one row per
-reading, e.g. (SQL editor):
+Input: a processed dataset from build_dataset.py (dataset.npz and
+dataset_card.json) with the excursion labels and the chronological,
+trip-level split. The baselines (baselines.py) use the same split, so the
+models are compared on exactly the same windows (compare.py).
 
-  select c.shipment_id, c.is_test, c.temp_min_c, c.temp_max_c, c.expected_delivery_at,
-         r.recorded_at, r.temperature_c, r.humidity_pct, r.latitude, r.longitude, r.speed_kmh,
-         'gps_jump' = any(r.quality_flags) as gps_jump
-  from cold_chain_readings r join cold_chain_shipments c using (shipment_id)
-  order by c.shipment_id, r.recorded_at;
+  scaling         Scaler fitted on the training trips' grid rows only and
+                  saved in the checkpoint, so inference applies exactly the
+                  same preprocessing
+  imbalance       positive-class weight = negatives / positives of the
+                  training set (BCE with logits); --no-pos-weight disables it
+  early stopping  on the validation loss: stops after --patience epochs
+                  without improvement and restores the best epoch's weights
+                  (not possible when the validation set is empty)
+  threshold       tuned on the validation set (maximum F1, or --min-recall)
+  test set        scored once with the final model, never used to choose
 
-For every trip, windows of `--steps` minutes are cut every `--stride` minutes;
-the label is 1 if the temperature leaves the shipment's range within the next
-`--horizon` minutes. Trips (not windows) are split into train/validation/test
-so no trip appears in two sets. Reported metrics (precision, recall, F1,
-ROC-AUC on the test trips) are computed from the data; nothing is assumed.
+Outputs (default <dataset>/runs/cnn_lstm-<time>/):
+  cnn_lstm.pt                weights, hyperparameters, scaler, grid settings, threshold
+  metrics.json, metrics.csv  validation/test metrics at the tuned threshold and at 0.5
+  history.csv                loss, accuracy and PR-AUC per epoch (training/validation)
+  predictions.csv            score of every validation/test window (for compare.py)
+  run.json                   seed, architecture, hyperparameters, dataset version, environment
+  plots/                     loss and accuracy curves, ROC, precision-recall, confusion matrix
 
-Simulated test shipments (is_test) are EXCLUDED: they are not research data.
---include-test exists only to smoke-test the pipeline; its outputs are marked
-as not valid for evaluation.
+Outputs of a dataset with test/simulated data are labelled "PIPELINE CHECK
+ONLY". training/install.py installs a selected model for the AI service.
 
 Usage (from ai-service/):
-  python -m cold_chain.training.train --csv readings.csv [--epochs 30] [--include-test]
-Writes cold_chain/models/cnn_lstm.pt and cold_chain/models/metrics.json.
+  python -m cold_chain.training.train --dataset <processed folder> [--max-epochs 100] [--patience 10]
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
-import json
 import random
-from collections import defaultdict
-from datetime import datetime, timedelta
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from ..preprocessing import Reading, build_sequence, excursion_label
+from ..evaluation.metrics import binary_metrics, tune_threshold
+from ..preprocessing import BINARY_FEATURES, SEQUENCE_FEATURES, Scaler
+from .common import (
+    METRIC_COLUMNS,
+    SETS,
+    banner,
+    code_version,
+    environment,
+    load_dataset,
+    prediction_rows,
+    run_directory,
+    write_json,
+    write_predictions,
+)
 
-MODELS = Path(__file__).resolve().parent.parent / "models"
-
-
-def _float(value: str) -> float | None:
-    return float(value) if value not in ("", None) else None
-
-
-def load_trips(path: Path, include_test: bool) -> dict:
-    trips = defaultdict(lambda: {"readings": []})
-    with path.open(newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
-            if row["is_test"].lower() in ("true", "t", "1") and not include_test:
-                continue
-            trip = trips[row["shipment_id"]]
-            trip["limits"] = (float(row["temp_min_c"]), float(row["temp_max_c"]))
-            trip["eta"] = datetime.fromisoformat(row["expected_delivery_at"]) if row.get("expected_delivery_at") else None
-            trip["readings"].append(
-                Reading(
-                    datetime.fromisoformat(row["recorded_at"]),
-                    _float(row["temperature_c"]),
-                    _float(row["humidity_pct"]),
-                    _float(row["latitude"]),
-                    _float(row["longitude"]),
-                    _float(row["speed_kmh"]),
-                    row.get("gps_jump", "").lower() in ("true", "t", "1"),
-                )
-            )
-    return trips
+HISTORY_COLUMNS = ("epoch", "train_loss", "validation_loss", "train_accuracy", "validation_accuracy", "validation_pr_auc")
 
 
-def windows(trip: dict, steps: int, stride: int, horizon: int):
-    readings = sorted(trip["readings"], key=lambda r: r.recorded_at)
-    if not readings:
-        return
-    low, high = trip["limits"]
-    now = readings[0].recorded_at + timedelta(minutes=steps)
-    end = readings[-1].recorded_at - timedelta(minutes=horizon)
-    while now <= end:
-        future = [r for r in readings if now < r.recorded_at <= now + timedelta(minutes=horizon)]
-        past = [r for r in readings if r.recorded_at <= now]
-        yield build_sequence(past, temp_min_c=low, temp_max_c=high, now=now, expected_delivery_at=trip["eta"], steps=steps), excursion_label(
-            future, temp_min_c=low, temp_max_c=high
-        )
-        now += timedelta(minutes=stride)
-
-
-def main() -> None:  # pragma: no cover - needs PyTorch, scikit-learn and real data
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--csv", type=Path, required=True)
-    parser.add_argument("--steps", type=int, default=60)
-    parser.add_argument("--stride", type=int, default=5)
-    parser.add_argument("--horizon", type=int, default=60)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--dataset", type=Path, required=True, help="folder with dataset.npz and dataset_card.json")
+    parser.add_argument("--out", type=Path)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--include-test", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--conv-channels", type=int, default=32)
+    parser.add_argument("--kernel-size", type=int, default=3)
+    parser.add_argument("--conv-layers", type=int, default=2)
+    parser.add_argument("--lstm-hidden", type=int, default=64)
+    parser.add_argument("--lstm-layers", type=int, default=1)
+    parser.add_argument("--dropout", type=float, default=0.2)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--max-epochs", type=int, default=100)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--min-delta", type=float, default=1e-4, help="smallest validation-loss improvement that counts")
+    parser.add_argument("--no-pos-weight", action="store_true")
+    parser.add_argument("--min-recall", type=float, help="tune the threshold for this recall instead of maximum F1")
+    args = parser.parse_args(argv)
 
+    import numpy as np
     import torch
-    from sklearn.metrics import f1_score, precision_score, recall_score, roc_auc_score
+    from sklearn.metrics import average_precision_score
 
+    from ..evaluation import plots
     from ..model import build_model
 
+    card, arrays = load_dataset(args.dataset)
+    label = banner(card)
+    y_np = {s: arrays[f"temp_y_{s}"].astype(np.float32) for s in SETS}
+    if not 0 < y_np["train"].sum() < len(y_np["train"]):
+        raise SystemExit("The training set needs both classes (excursion and no excursion).")
+
     random.seed(args.seed)
+    np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    trips = load_trips(args.csv, args.include_test)
-    ids = sorted(trips)
-    random.shuffle(ids)
-    n = len(ids)
-    if n < 10:
-        raise SystemExit(f"Only {n} trips: collect more real trips before training.")
-    split = {"train": ids[: int(n * 0.7)], "validation": ids[int(n * 0.7) : int(n * 0.85)], "test": ids[int(n * 0.85) :]}
-    data = {name: [w for i in members for w in windows(trips[i], args.steps, args.stride, args.horizon)] for name, members in split.items()}
-    if not any(label for _, label in data["train"]):
-        raise SystemExit("No excursions in the training trips: the model cannot learn the positive class yet.")
+    torch.use_deterministic_algorithms(True)
+    scaler = Scaler.fit(arrays["grid_X_train"], SEQUENCE_FEATURES, BINARY_FEATURES)
+    x = {s: torch.from_numpy(scaler.transform_array(arrays[f"temp_X_{s}"])) for s in SETS}
+    y = {s: torch.from_numpy(y_np[s]) for s in SETS}
 
-    def tensors(rows):
-        return torch.tensor([x for x, _ in rows], dtype=torch.float32), torch.tensor([y for _, y in rows], dtype=torch.float32)
-
-    model = build_model()
-    optimiser = torch.optim.Adam(model.parameters(), lr=1e-3)
-    x_train, y_train = tensors(data["train"])
-    positives = float(y_train.sum())
-    weight = torch.tensor((len(y_train) - positives) / max(positives, 1.0))
-    for epoch in range(args.epochs):
-        model.train()
-        optimiser.zero_grad()
-        p = model(x_train)
-        loss = torch.nn.functional.binary_cross_entropy(p, y_train, weight=1 + (weight - 1) * y_train)
-        loss.backward()
-        optimiser.step()
-        print(f"epoch {epoch + 1}: loss {loss.item():.4f}")
-
-    model.eval()
-    x_test, y_test = tensors(data["test"])
-    with torch.no_grad():
-        scores = model(x_test).tolist()
-    truth = [int(v) for v in y_test.tolist()]
-    predicted = [int(s >= 0.5) for s in scores]
-    metrics = {
-        "valid_for_evaluation": not args.include_test,
-        "trips": {k: len(v) for k, v in split.items()},
-        "windows": {k: len(v) for k, v in data.items()},
-        "test_positives": sum(truth),
-        "precision": precision_score(truth, predicted, zero_division=0),
-        "recall": recall_score(truth, predicted, zero_division=0),
-        "f1": f1_score(truth, predicted, zero_division=0),
-        "roc_auc": roc_auc_score(truth, scores) if 0 < sum(truth) < len(truth) else None,
-        "trained_at": datetime.now().isoformat(timespec="seconds"),
+    hyperparameters = {
+        "n_features": len(SEQUENCE_FEATURES),
+        "conv_channels": args.conv_channels,
+        "kernel_size": args.kernel_size,
+        "conv_layers": args.conv_layers,
+        "lstm_hidden": args.lstm_hidden,
+        "lstm_layers": args.lstm_layers,
+        "dropout": args.dropout,
     }
-    MODELS.mkdir(exist_ok=True)
-    version = metrics["trained_at"].replace(":", "")
-    torch.save({"state_dict": model.state_dict(), "version": version, "horizon_minutes": args.horizon, "hyperparameters": {}}, MODELS / "cnn_lstm.pt")
-    (MODELS / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    print(json.dumps(metrics, indent=2))
+    model = build_model(**hyperparameters)
+    positives = float(y["train"].sum())
+    pos_weight = None if args.no_pos_weight else (len(y["train"]) - positives) / positives
+    loss_fn = torch.nn.BCEWithLogitsLoss(pos_weight=None if pos_weight is None else torch.tensor(pos_weight))
+    optimiser = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    loader = torch.utils.data.DataLoader(
+        torch.utils.data.TensorDataset(x["train"], y["train"]),
+        batch_size=args.batch_size,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(args.seed),
+    )
+
+    def scores(set_name: str):
+        """(probabilities, loss) of a set with the current weights."""
+        if not len(y[set_name]):
+            return np.array([]), None
+        model.eval()
+        with torch.no_grad():
+            logits = model(x[set_name])
+            return torch.sigmoid(logits).numpy(), float(loss_fn(logits, y[set_name]))
+
+    has_validation = len(y["validation"]) > 0
+    history, best, stale = [], None, 0
+    for epoch in range(1, args.max_epochs + 1):
+        model.train()
+        for batch_x, batch_y in loader:
+            optimiser.zero_grad()
+            loss_fn(model(batch_x), batch_y).backward()
+            optimiser.step()
+        (train_p, train_loss), (val_p, val_loss) = scores("train"), scores("validation")
+        val_y = y_np["validation"]
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "validation_loss": val_loss,
+                "train_accuracy": float(((train_p >= 0.5) == y_np["train"]).mean()),
+                "validation_accuracy": float(((val_p >= 0.5) == val_y).mean()) if has_validation else None,
+                "validation_pr_auc": float(average_precision_score(val_y, val_p)) if has_validation and val_y.sum() else None,
+            }
+        )
+        if not has_validation:
+            continue
+        if best is None or val_loss < best["loss"] - args.min_delta:
+            best, stale = {"loss": val_loss, "epoch": epoch, "state": copy.deepcopy(model.state_dict())}, 0
+        else:
+            stale += 1
+            if stale >= args.patience:
+                break
+    if best is not None:
+        model.load_state_dict(best["state"])
+    stopping = (
+        {"monitored": "validation loss", "bestEpoch": best["epoch"], "epochsRun": len(history), "stoppedEarly": len(history) < args.max_epochs}
+        if best is not None
+        else {"monitored": None, "reason": "no validation samples: trained for --max-epochs", "epochsRun": len(history)}
+    )
+
+    probabilities = {s: scores(s)[0] for s in SETS}
+    threshold, threshold_info = tune_threshold(y_np["validation"], probabilities["validation"], min_recall=args.min_recall)
+    result = {"threshold": threshold, "thresholdChoice": threshold_info}
+    rows, predictions = [], []
+    for s in ("validation", "test"):
+        result[s] = {"tuned": binary_metrics(y_np[s], probabilities[s], threshold), "default_0.5": binary_metrics(y_np[s], probabilities[s], 0.5)}
+        for kind, metrics in result[s].items():
+            rows.append({"model": "cnn_lstm", "set": s, "threshold_kind": kind, **{k: v for k, v in metrics.items() if k != "confusion_matrix"}, **metrics.get("confusion_matrix", {})})
+        predictions += prediction_rows("cnn_lstm", s, arrays[f"temp_trip_{s}"], arrays[f"temp_time_{s}"], y_np[s], probabilities[s])
+
+    out = run_directory(args.dataset, "cnn_lstm", args.out)
+    version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    checkpoint = {
+        "state_dict": model.state_dict(),
+        "version": version,
+        "hyperparameters": hyperparameters,
+        "features": list(SEQUENCE_FEATURES),
+        "steps": card["config"]["window"]["steps"],
+        "horizon_minutes": card["config"]["excursion"]["horizon_minutes"],
+        "grid_config": card["config"]["grid"],
+        "scaler": scaler.to_dict(),
+        "threshold": threshold,
+        "dataset_version": card["source"]["datasetVersion"],
+        "dataset_config_id": card.get("configId"),
+        "valid_for_evaluation": card["validForEvaluation"],
+    }
+    torch.save(checkpoint, out / "cnn_lstm.pt")
+
+    with (out / "history.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, HISTORY_COLUMNS)
+        writer.writeheader()
+        writer.writerows(history)
+    with (out / "metrics.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, METRIC_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    write_predictions(out / "predictions.csv", predictions)
+
+    best_epoch = stopping.get("bestEpoch")
+    plotted = {
+        "loss": plots.training_curves(history, "loss", out / "plots" / "loss.png", "CNN-LSTM: loss per epoch", label, best_epoch=best_epoch),
+        "accuracy": plots.training_curves(history, "accuracy", out / "plots" / "accuracy.png", "CNN-LSTM: accuracy per epoch (threshold 0.5)", label, best_epoch=best_epoch),
+    }
+    for s in ("validation", "test"):
+        curve = {"cnn_lstm": (y_np[s], probabilities[s])}
+        plotted[f"roc_{s}"] = plots.roc_curves(curve, out / "plots" / f"roc_{s}.png", f"CNN-LSTM: ROC, {s} set", label)
+        plotted[f"pr_{s}"] = plots.pr_curves(curve, out / "plots" / f"pr_{s}.png", f"CNN-LSTM: precision-recall, {s} set", label)
+    if result["test"]["tuned"].get("samples"):
+        plotted["confusion_test"] = plots.confusion_matrix(
+            result["test"]["tuned"]["confusion_matrix"], ("No excursion", "Excursion"), out / "plots" / "confusion_cnn_lstm_test.png",
+            f"CNN-LSTM: test set (threshold {threshold:.2f})", label,
+        )
+    write_json(
+        out / "metrics.json",
+        {
+            "status": label or "evaluation on real data",
+            "validForEvaluation": card["validForEvaluation"],
+            "task": "temperature",
+            "target": "temperature excursion within the horizon",
+            "models": {"cnn_lstm": result},
+            "earlyStopping": stopping,
+            "plots": {k: v.name if v else "not drawn: the set does not contain both classes" for k, v in plotted.items()},
+        },
+    )
+    write_json(
+        out / "run.json",
+        {
+            "createdAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "status": label or "evaluation on real data",
+            "task": "temperature",
+            "model": "cnn_lstm",
+            "modelVersion": version,
+            "seed": args.seed,
+            "deterministicAlgorithms": True,
+            "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+            "dataset": {**card["source"], "configId": card.get("configId"), "config": card["config"], "validForEvaluation": card["validForEvaluation"]},
+            "classes": {s: {"samples": int(len(y_np[s])), "positives": int(y_np[s].sum()), "trips": len(set(arrays[f"temp_trip_{s}"].tolist()))} for s in SETS},
+            "features": list(SEQUENCE_FEATURES),
+            "sequenceLength": checkpoint["steps"],
+            "horizonMinutes": checkpoint["horizon_minutes"],
+            "architecture": str(model),
+            "parameters": sum(p.numel() for p in model.parameters()),
+            "hyperparameters": hyperparameters,
+            "training": {
+                "loss": "binary cross-entropy with logits",
+                "positiveClassWeight": pos_weight,
+                "optimizer": "Adam",
+                "learningRate": args.lr,
+                "weightDecay": args.weight_decay,
+                "batchSize": args.batch_size,
+                "maxEpochs": args.max_epochs,
+                "patience": args.patience,
+                "minDelta": args.min_delta,
+                **stopping,
+            },
+            "thresholdRule": f"highest threshold with recall >= {args.min_recall} on validation" if args.min_recall else "maximum F1 on validation",
+            "environment": environment(),
+            "code": code_version(),
+        },
+    )
+
+    print(f"Run: {out}")
+    if label:
+        print(f"  {label}")
+    print(f"  epochs: {stopping['epochsRun']}, best epoch: {best_epoch}, threshold: {threshold:.3f} ({threshold_info['source']})")
+    for s in ("validation", "test"):
+        m = result[s]["tuned"]
+        if m.get("samples"):
+            print(f"  {s:10} n={m['samples']} pos={m['positives']} " + " ".join(f"{k}={m[k]:.3f}" if m[k] is not None else f"{k}=n/a" for k in ("precision", "recall", "f1", "roc_auc", "pr_auc")))
+        else:
+            print(f"  {s:10} no samples")
+    return 0
 
 
-if __name__ == "__main__":  # pragma: no cover
-    main()
+if __name__ == "__main__":
+    sys.exit(main())
