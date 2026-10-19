@@ -1,4 +1,7 @@
-# Training the cold-chain CNN-LSTM (Component 2). Not needed to run the service.
+# Training the cold-chain models (Component 2). Not needed to run the service.
+# PyTorch CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu
 -r requirements.txt
+numpy>=1.26
 torch>=2.3
 scikit-learn>=1.5
+matplotlib>=3.8

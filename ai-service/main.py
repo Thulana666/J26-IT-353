@@ -1,9 +1,10 @@
 """PharmaTwin AI/optimisation service.
 
 Serves Component 3 (warehouse spatial allocation) and Component 2 (cold-chain
-risk prediction; the CNN-LSTM is not trained yet, so /cold-chain/predict
-answers 501). It is stateless and has no database access: the Node.js backend
-sends the data with each request.
+risk prediction with the installed trained models; /cold-chain/predict
+answers 501 while none is installed, see cold_chain/models/README.md). It is
+stateless and has no database access: the Node.js backend sends the data with
+each request.
 
 Run (from ai-service/):  uvicorn main:app --port 8000
 """
