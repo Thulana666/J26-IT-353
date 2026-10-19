@@ -2,7 +2,10 @@
 
     python -m event_intel.experiments.run --audit-only
     python -m event_intel.experiments.run --model nb --tier confirmed_high
-    python -m event_intel.experiments.run --model transformer --tier confirmed_high   # needs torch + weights
+    .venv/Scripts/python.exe -m event_intel.experiments.run --model transformer --tier confirmed_high --task category --seed 42
+
+One process, one seed, one model at a time (no parallel jobs). The transformer runs on CPU only,
+offline from the pinned revision, and refuses to start with less than 3 GB of free RAM.
 
 Fit on train, select hyperparameters and the hybrid threshold on validation (same tier), then
 evaluate ONCE on test. Test results are reported separately for human-confirmed labels (ground
@@ -27,7 +30,8 @@ from ..dataset.schema import GUIDE_VERSION
 from . import data as D
 from .hybrid import decide, select_threshold
 from .metrics import accuracy, bootstrap, macro_f1, report
-from .models import MissingDependency, NaiveBayes, Transformer, environment
+from .models import (InsufficientResources, MissingDependency, NaiveBayes, Transformer, check_resources,
+                     environment, package_versions, set_seed)
 
 ROOT = Path(__file__).resolve().parents[2]
 DATASET = ROOT / "data/dataset_v1/event_dataset_v1.csv"
@@ -47,21 +51,30 @@ def git_state() -> dict:
     return {"commit": run("rev-parse", "HEAD"), "dirty": bool(run("status", "--porcelain"))}
 
 
-def build_model(kind: str, field: str, alpha: float | None = None, seed: int = 42):
+def build_model(kind: str, alpha: float | None = None, seed: int = 42):
     if kind == "nb":
         return NaiveBayes(alpha=alpha if alpha is not None else 1.0)
     return Transformer(seed=seed)
 
 
-def fit_and_select(kind, train, val, field, labels):
-    """Choose hyperparameters on validation only. Returns (model, selection log)."""
+def run_id_for(model: str, tier: str, task: str, seed: int) -> str:
+    return f"{model}_{tier}_{task}_seed{seed}_{utc_now().replace(':', '').replace('-', '')}"
+
+
+def fit_and_select(kind, train, val, field, labels, seed: int = 42):
+    """Choose NB alpha, or the transformer's best epoch, on VALIDATION only. Returns (model, val probs, log)."""
     texts, ys = [e.text for e in train], [D.gold(e, field) for e in train]
     vtexts, vys = [e.text for e in val], [D.gold(e, field) for e in val]
     score = macro_f1(labels)
     log, best = {}, None
     for alpha in (NB_ALPHAS if kind == "nb" else (None,)):
+        set_seed(seed)
         t0 = time.perf_counter()
-        model = build_model(kind, field, alpha).fit(texts, ys)
+        model = build_model(kind, alpha, seed)
+        if kind == "nb":
+            model.fit(texts, ys)
+        else:
+            model.fit(texts, ys, vtexts, vys, score)  # best epoch chosen on validation inside fit
         seconds = time.perf_counter() - t0
         probs = model.predict_proba(vtexts)
         pred = [max(p, key=p.get) for p in probs]
@@ -72,7 +85,7 @@ def fit_and_select(kind, train, val, field, labels):
     return best[1], best[2], log
 
 
-def evaluate_category(examples, kind, tier):
+def evaluate_category(examples, kind, tier, seed=42):
     labels = list(D.SUPPORTED_CATEGORIES)
     train, val = D.eligible(examples, tier, "train"), D.eligible(examples, tier, "validation")
     test_human = D.eligible(examples, "confirmed", "test")
@@ -80,7 +93,7 @@ def evaluate_category(examples, kind, tier):
     D.assert_disjoint(train, val)
     D.assert_disjoint(train + val, test_human + test_silver)
 
-    model, val_probs, selection = fit_and_select(kind, train, val, "category", labels)
+    model, val_probs, selection = fit_and_select(kind, train, val, "category", labels, seed)
     threshold, threshold_log = select_threshold([e.record for e in val], val_probs,
                                                 [e.category for e in val], macro_f1(labels))
     results, predictions = {}, []
@@ -114,13 +127,13 @@ def evaluate_category(examples, kind, tier):
     return meta, results, predictions
 
 
-def evaluate_relevance(examples, kind, tier):
+def evaluate_relevance(examples, kind, tier, seed=42):
     labels = [1, 0]
     train, val = D.eligible(examples, tier, "train", "relevance"), D.eligible(examples, tier, "validation", "relevance")
     test_human = D.eligible(examples, "confirmed", "test", "relevance")
     test_silver = [e for e in D.eligible(examples, tier, "test", "relevance") if e.label_kind == D.SILVER]
     D.assert_disjoint(train + val, test_human + test_silver)
-    model, _, selection = fit_and_select(kind, train, val, "relevance", labels)
+    model, _, selection = fit_and_select(kind, train, val, "relevance", labels, seed)
     results, predictions = {}, []
     for name, rows in (("validation_" + tier, val), ("test_human_confirmed", test_human), ("test_ai_silver", test_silver)):
         if not rows:
@@ -161,10 +174,28 @@ def write_csv(path, rows):
         w.writerows(rows)
 
 
+def preflight(model: str, seed: int) -> int:
+    """0 when the run may start; 2 = transformer stack/weights missing, 3 = not enough free RAM."""
+    if model != "transformer":
+        return 0
+    try:
+        Transformer(seed=seed)
+        check_resources()
+    except MissingDependency as exc:
+        print(f"BLOCKED: {exc}", file=sys.stderr)
+        return 2
+    except InsufficientResources as exc:
+        print(f"BLOCKED: {exc}", file=sys.stderr)
+        return 3
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--model", choices=("nb", "transformer"), default="nb")
     ap.add_argument("--tier", choices=tuple(D.TIERS), default="confirmed_high")
+    ap.add_argument("--seed", type=int, default=42, help="training seed; the dataset split is fixed and unaffected")
+    ap.add_argument("--task", choices=("category", "relevance", "both"), default="both")
     ap.add_argument("--audit-only", action="store_true")
     ap.add_argument("--out", type=Path, default=OUT)
     args = ap.parse_args(argv)
@@ -175,41 +206,46 @@ def main(argv=None) -> int:
     if args.audit_only:
         print(json.dumps({"environment": env, "audit": audit}, indent=1))
         return 0
-    if args.model == "transformer" and not env["transformer_ready"]:
-        try:
-            Transformer()
-        except MissingDependency as exc:
-            print(f"BLOCKED: {exc}", file=sys.stderr)
-            return 2
+    blocked = preflight(args.model, args.seed)
+    if blocked:
+        return blocked
+    set_seed(args.seed)
 
-    run_id = f"{args.model}_{args.tier}_{utc_now().replace(':', '').replace('-', '')}"
+    run_id = run_id_for(args.model, args.tier, args.task, args.seed)
     out = args.out / run_id
     out.mkdir(parents=True, exist_ok=False)
     t0 = time.perf_counter()
-    cat_meta, cat_results, cat_pred = evaluate_category(examples, args.model, args.tier)
-    rel_meta, rel_results, rel_pred = evaluate_relevance(examples, args.model, args.tier)
+    cat_meta = cat_results = rel_meta = rel_results = None
+    cat_pred, rel_pred = [], []
+    if args.task in ("category", "both"):
+        cat_meta, cat_results, cat_pred = evaluate_category(examples, args.model, args.tier, args.seed)
+    if args.task in ("relevance", "both"):
+        rel_meta, rel_results, rel_pred = evaluate_relevance(examples, args.model, args.tier, args.seed)
     run = {
         "run_id": run_id, "created_at": utc_now(), "model_kind": args.model, "tier": args.tier,
+        "task": args.task, "seed": args.seed,
         "tier_label_statuses": D.TIERS[args.tier],
         "training_labels_note": ("human-confirmed only" if args.tier == "confirmed" else
                                  "SILVER-LABEL EXPERIMENT: training includes AI-proposed labels that are not human-confirmed"),
         "supported_categories": D.SUPPORTED_CATEGORIES, "unsupported_categories_not_trained": D.UNSUPPORTED_CATEGORIES,
         "rules_baseline": {"name": RULES_NAME, "version": RULES_VERSION}, "guide_version": GUIDE_VERSION,
         "inputs": {p.name: file_sha256(p) for p in (DATASET, PROPOSALS, SPLIT, SNAPSHOT)},
-        "environment": {**env, "python": sys.version.split()[0], "platform": platform.platform()},
-        "git": git_state(), "seeds": {"bootstrap": 2026, "transformer": 42, "naive_bayes": "deterministic"},
+        "environment": {**env, "platform": platform.platform()}, "package_versions": package_versions(),
+        "git": git_state(),
+        "seeds": {"training": args.seed, "bootstrap": 2026, "split": "fixed: split_prelim_v1.json (seed 42), not reseeded"},
         "category": cat_meta, "relevance": rel_meta, "total_seconds": round(time.perf_counter() - t0, 2),
     }
     (out / "run.json").write_text(json.dumps(run, indent=1), encoding="utf-8")
-    (out / "metrics.json").write_text(json.dumps({"audit": audit, "category": cat_results, "relevance": rel_results}, indent=1), encoding="utf-8")
+    (out / "metrics.json").write_text(json.dumps({"seed": args.seed, "audit": audit, "category": cat_results,
+                                                  "relevance": rel_results}, indent=1), encoding="utf-8")
     write_csv(out / "predictions_category.csv", cat_pred)
     write_csv(out / "predictions_relevance.csv", rel_pred)
-    print(f"{run_id}: train {cat_meta['train_n']} | threshold {cat_meta['hybrid_threshold']} | {round(time.perf_counter() - t0, 1)} s -> {out}")
-    for name, res in cat_results.items():
+    print(f"{run_id}: {round(time.perf_counter() - t0, 1)} s -> {out}")
+    for name, res in (cat_results or {}).items():
         if res.get("n"):
             print(f"  category {name} (n={res['n']}): " + ", ".join(
                 f"{k} macroF1 {v['macro']['f1']:.3f} acc {v['accuracy']:.3f}" for k, v in res["systems"].items()))
-    for name, res in rel_results.items():
+    for name, res in (rel_results or {}).items():
         if res.get("n"):
             print(f"  relevance {name} (n={res['n']}): " + ", ".join(
                 f"{k} macroF1 {v['macro']['f1']:.3f}" for k, v in res["systems"].items()))

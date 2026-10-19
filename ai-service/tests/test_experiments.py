@@ -3,9 +3,16 @@ All examples are synthetic fixtures, not research labels. Run from ai-service/:
 python -m unittest discover tests
 """
 
+import os
+import random
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from event_intel.experiments import data as D
+from event_intel.experiments import models as M
+from event_intel.experiments import run as R
 from event_intel.experiments.hybrid import decide, select_threshold
 from event_intel.experiments.metrics import bootstrap, confusion, macro_f1, report
 from event_intel.experiments.models import MissingDependency, NaiveBayes, Transformer, environment
@@ -153,6 +160,91 @@ class TransformerGuardTests(unittest.TestCase):
             self.skipTest("transformer stack installed")
         with self.assertRaises(MissingDependency):
             Transformer()
+
+
+class TransformerSafetyTests(unittest.TestCase):
+    def test_revision_is_pinned_and_loading_is_offline(self):
+        self.assertEqual(M.TRANSFORMER_REVISION, "fb53ab8802853c8e4fbdbcd0529f21fc6f459b2b")
+        self.assertEqual(M.load_kwargs(), {"revision": M.TRANSFORMER_REVISION, "local_files_only": True})
+
+    def test_pinned_snapshot_detection_uses_the_hub_cache(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HF_HUB_CACHE": tmp}):
+            snap = M.pinned_snapshot()
+            self.assertEqual(snap, Path(tmp) / "models--distilbert--distilroberta-base" / "snapshots" / M.TRANSFORMER_REVISION)
+            self.assertFalse(M.environment()["transformer_weights_cached"])
+            snap.mkdir(parents=True)
+            for name in M.REQUIRED_FILES:
+                (snap / name).write_text("x")
+            self.assertTrue(M.environment()["transformer_weights_cached"])
+
+    def test_laptop_safe_defaults(self):
+        d = M.SAFE_DEFAULTS
+        self.assertEqual((d["threads"], d["batch_size"], d["max_length"]), (4, 2, 256))
+        self.assertGreaterEqual(d["grad_accum_steps"], 1)
+        self.assertGreater(d["max_grad_norm"], 0)
+        self.assertTrue(0 < d["warmup_ratio"] < 0.5)
+
+    def test_unknown_settings_are_rejected(self):
+        with self.assertRaises(ValueError):
+            Transformer(seed=1, use_gpu=True)
+
+    def test_ram_guard(self):
+        with mock.patch.object(M, "free_ram_gb", return_value=2.0):
+            with self.assertRaises(M.InsufficientResources):
+                M.check_resources()
+        with mock.patch.object(M, "free_ram_gb", return_value=None):
+            with self.assertRaises(M.InsufficientResources):
+                M.check_resources()
+        with mock.patch.object(M, "free_ram_gb", return_value=5.0):
+            self.assertEqual(M.check_resources(), 5.0)
+
+    def test_free_ram_reading_is_plausible(self):
+        free = M.free_ram_gb()
+        self.assertTrue(free is None or 0 < free < 1024)
+
+    def test_preflight_blocks_without_stack_or_ram(self):
+        self.assertEqual(R.preflight("nb", 1), 0)
+        if not environment()["transformer_ready"]:
+            self.assertEqual(R.preflight("transformer", 1), 2)
+        else:
+            with mock.patch.object(R, "check_resources", side_effect=M.InsufficientResources("low RAM")):
+                self.assertEqual(R.preflight("transformer", 1), 3)
+
+
+class SeedTests(unittest.TestCase):
+    def test_set_seed_is_reproducible(self):
+        M.set_seed(7)
+        a = [random.random() for _ in range(3)]
+        M.set_seed(7)
+        self.assertEqual(a, [random.random() for _ in range(3)])
+        M.set_seed(8)
+        self.assertNotEqual(a, [random.random() for _ in range(3)])
+
+    def test_seed_is_in_the_run_id(self):
+        self.assertIn("_seed13_", R.run_id_for("transformer", "confirmed_high", "category", 13))
+
+    def test_seed_does_not_change_the_split(self):
+        rows = [ex("a", "train"), ex("b", "validation"), ex("c", "test")]
+        M.set_seed(1)
+        first = [e.article_id for e in D.eligible(rows, "confirmed", "test")]
+        M.set_seed(99)
+        self.assertEqual(first, [e.article_id for e in D.eligible(rows, "confirmed", "test")])
+
+
+@unittest.skipUnless(environment()["transformer_ready"], "transformer stack or pinned weights not available")
+class OfflineLoadTests(unittest.TestCase):
+    def test_pinned_model_loads_offline_on_cpu_with_trainable_head_and_encoder(self):
+        model = Transformer(seed=1)
+        with mock.patch.dict(os.environ, {"HF_HUB_OFFLINE": "1"}):
+            model.load(num_labels=3)
+        self.assertEqual(next(model.model.parameters()).device.type, "cpu")
+        self.assertTrue(all(p.requires_grad for p in model.model.classifier.parameters()))
+        self.assertTrue(all(p.requires_grad for p in model.model.roberta.encoder.parameters()))
+        model.classes = ["natural_disaster", "other", "public_health"]
+        probs = model.predict_proba(["Floods displaced families in Ratnapura District."])
+        self.assertAlmostEqual(sum(probs[0].values()), 1.0, places=4)
+        import torch
+        self.assertEqual(torch.get_num_threads(), 4)
 
 
 if __name__ == "__main__":
