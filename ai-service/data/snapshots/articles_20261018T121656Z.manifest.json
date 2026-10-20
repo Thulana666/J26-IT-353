@@ -1,0 +1,39 @@
+{
+  "snapshot_file": "articles_20261018T121656Z.jsonl",
+  "format": "jsonl",
+  "created_at": "2026-10-18T12:16:56.219Z",
+  "source_table": "event_articles",
+  "fields": [
+    "id",
+    "data_source_id",
+    "source",
+    "title",
+    "summary",
+    "content",
+    "url",
+    "author",
+    "language",
+    "country_code",
+    "published_at",
+    "fetched_at"
+  ],
+  "order_by": "id",
+  "row_count": 1258,
+  "sha256": "439ba8fe172a32d66d9621500cf18084065072d8d846bb0ceb8354d1b7887316",
+  "counts_by_source": {
+    "Daily Mirror (Sri Lanka)": 2,
+    "Daily News (Sri Lanka)": 3,
+    "GDACS (Global Disaster Alert and Coordination System)": 63,
+    "Ministry of Health Sri Lanka": 2,
+    "NewsAPI": 9,
+    "ReliefWeb (UN OCHA)": 1075,
+    "Sunday Observer (Sri Lanka)": 1,
+    "WHO Disease Outbreak News": 103
+  },
+  "exporter": {
+    "name": "export-article-snapshot",
+    "version": "1.0.0"
+  },
+  "git_commit": "bd3d4496ebd2bfeab271e93961e1e022a7091952",
+  "note": "Read-only export. Original titles, text and URLs are copied unchanged."
+}
