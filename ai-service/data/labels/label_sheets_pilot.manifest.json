@@ -1,0 +1,120 @@
+{
+  "manifest_version": 1,
+  "created_at": "2026-10-18T12:23:06Z",
+  "tool": {
+    "name": "label_sheet",
+    "version": "1.0"
+  },
+  "guide_version": "1.0",
+  "settings": {
+    "version": "pilot",
+    "seed": 42,
+    "family_cap": 3,
+    "max_main": 60,
+    "metadata_size": 0,
+    "agreement_size": 0,
+    "metadata_family_cap": 2,
+    "excerpt_chars": 2000
+  },
+  "snapshot": {
+    "file": "articles_20261018T122253Z.jsonl",
+    "sha256": "439ba8fe172a32d66d9621500cf18084065072d8d846bb0ceb8354d1b7887316",
+    "row_count": 1258,
+    "manifest_verified": true
+  },
+  "git_commit": "57e1a491c4e9d7a7113a128214a0026e6f61e1ec",
+  "text_gate": {
+    "rules": "rules-baseline",
+    "version": "0.1.0",
+    "used_for": "pool selection only (usable text vs metadata-only); no predictions are shown"
+  },
+  "pools": {
+    "english_usable_text": 707,
+    "metadata_only": 523
+  },
+  "excluded": {
+    "duplicate_text": 2,
+    "limited_text_title_only": 2,
+    "limited_text_truncated": 9,
+    "main_family_cap": 205,
+    "non_english": 15
+  },
+  "sheets": {
+    "main": {
+      "file": "article_labels_pilot.sheet.csv",
+      "rows": 60,
+      "article_ids": [
+        "649a2eff-9c6f-4276-b56f-9574584558a9",
+        "b471403b-59e7-451f-a4bd-736286db2868",
+        "4da050d8-a5b5-4cf3-8f3e-8a71d557a402",
+        "31fdb332-18de-4efe-84b6-4ffe78eacb6f",
+        "31ca01a2-6ef9-4ce0-a6a0-86de46fb7fe9",
+        "004f069f-3f2d-41c9-a0a0-f114a1079f43",
+        "d6a027b4-a926-40d6-9429-2462ac0d1a66",
+        "7ba9fdf5-45fd-4f44-9596-1ce1c897652b",
+        "cf0d99d4-f5e7-4434-ae53-9b61a2d29b09",
+        "824470a5-5d39-4f7d-8594-b59e981d3874",
+        "c9107c62-aa74-463d-8fe2-e6557797549e",
+        "83dfbe5d-dced-436d-8e5a-eec50e2c6f50",
+        "0aefb410-879a-4dc0-b79c-cda1dbd35198",
+        "dff7ad0a-246d-4a13-aa17-5dcd05f68a82",
+        "afc54466-76f8-429e-92a8-5b63c5ea38e5",
+        "3a7dd19f-f3ce-443e-9789-8584ba688c04",
+        "17244e38-5fca-4d55-83c7-51922f91d89d",
+        "25e6ee1a-78d6-4335-9f16-e85462757c30",
+        "2ccfffb5-2c18-4606-b4dc-50b755a88c1b",
+        "c6c8bb30-6618-4dd2-8dac-f8146db118b1",
+        "69c41589-1f62-4027-bf01-f3e64b2bf753",
+        "9ae73aca-0f73-41fc-8be0-3de9bbc2d494",
+        "b1a12692-4229-4775-8a04-f7e4f0d8fc84",
+        "01f84177-d24d-44b8-9a30-a362bbc00675",
+        "137685cd-4f13-4363-85d8-02c4cc5cbba1",
+        "dc629a3f-d015-49f5-bca2-311d6afb1340",
+        "cf3321ca-72cf-46a2-ae62-49caf4c9f12a",
+        "3d5e0b10-e80e-48da-a2e7-42cc9a5d640d",
+        "6a5daa21-c6e4-4893-941c-3f05a634ee4b",
+        "6f355867-ef1e-4dcb-8878-4310e32578bb",
+        "f3f48c1a-b679-49d0-a401-aaf72f903591",
+        "9c16d22f-acbc-4677-b5d2-824392ead3a4",
+        "bb834206-7995-40a5-acff-21ff62d1e050",
+        "3d761fb0-8f26-4224-b3c9-c43983a8f504",
+        "00e30fe7-ed2b-4750-b65f-cb530ce42c6c",
+        "7ee49a51-26c2-40bf-8fc9-a7a9707daca3",
+        "146c4f94-fcae-4667-b392-c6c97f6cf808",
+        "11189a32-7e1a-40a8-9f15-0764cdf5ba2a",
+        "63110be4-5fb2-4059-83fc-9550f3b76f2e",
+        "e7ed25f2-e1ce-4c23-aa44-71fcb83aff78",
+        "ce49a218-7dbd-4085-9f7e-21acae1fab40",
+        "4fc2cc5e-bd9f-433e-a938-9426536386e0",
+        "e59f8940-2d5b-4012-92cc-3a975a7b93c0",
+        "22b12574-2ee7-48fa-9b46-30fe867b37bf",
+        "66cb19a6-b887-4c97-83a3-3fde042d0c83",
+        "c4fedd98-26d5-4390-aec8-aea1e1f065c9",
+        "4cc13a90-3dda-43a2-af66-a02a4f334e5a",
+        "a2e1b518-9b9f-4b18-98a5-046eed27f63b",
+        "39ae6d22-4206-49ac-8405-c380076ccfe0",
+        "a4b2cad4-ebf9-4daf-9e1c-b2caa6e244d4",
+        "c9ad4bb9-2b5f-44da-9970-7677cc710e06",
+        "c5be15ff-4432-47b9-b60d-21745b949059",
+        "91f890b2-8d45-45cc-b895-f556882b151a",
+        "ab3f9dd1-dc84-4a0d-8700-bf67272149a4",
+        "44a40ab7-d66c-4210-8822-c05cd8c4cdea",
+        "ae1de4b2-4873-464c-b354-e2c62874db12",
+        "a6ea3405-e347-408c-856b-6f28bb189cc4",
+        "175e6cab-b6bf-42ff-8722-50a66267cd3b",
+        "1e24deac-f806-4c7b-b6a9-7c380a0342a6",
+        "38eb91a7-2a64-4090-8731-d26da17f9488"
+      ]
+    },
+    "metadata_review": {
+      "file": null,
+      "rows": 0,
+      "article_ids": []
+    },
+    "agreement_review": {
+      "file": null,
+      "rows": 0,
+      "article_ids": []
+    }
+  }
+}
