@@ -56,19 +56,32 @@ async function collect() {
     const reports = await query(appname, "reports", {
       filter: { field: "primary_country.iso3", value: COUNTRY_ISO3 },
       fields: {
-        include: ["title", "body-html", "body", "url_alias", "url", "date.original", "date.created", "source.shortname", "source.name", "language.code"],
+        include: [
+          "title", "body-html", "body", "url_alias", "url", "date.original", "date.created",
+          "source.shortname", "source.name", "language.code",
+          "format.name", "theme.name", "disaster.name", "file.url",
+        ],
       },
       sort: ["date.original:desc"],
       limit: REPORT_LIMIT,
     });
     fetched += reports.length;
     for (const { fields: f } of reports) {
-      const content = cleanText(f["body-html"] || f.body);
+      const body = cleanText(f["body-html"] || f.body);
+      const names = (list) => (list ?? []).map((item) => item.name).filter(Boolean).join(", ");
+      // ReliefWeb's own metadata. Some reports (e.g. the daily dengue
+      // infographics) are only a PDF attachment with no text body.
+      const metadata = [
+        names(f.format) && `Format: ${names(f.format)}`,
+        names(f.theme) && `Themes: ${names(f.theme)}`,
+        names(f.disaster) && `Related disaster: ${names(f.disaster)}`,
+        ...(f.file ?? []).map((file) => file.url && `Attachment: ${file.url}`),
+      ].filter(Boolean);
       articles.push({
         title: cleanText(f.title),
         url: normalizeUrl(f.url_alias || f.url),
-        summary: firstParagraph(content),
-        content,
+        summary: body ? firstParagraph(body) : metadata.slice(0, 3).join(" · ") || null,
+        content: body || metadata.join("\n") || null,
         author: (f.source ?? []).map((s) => s.shortname || s.name).filter(Boolean).join(", ") || null,
         language: f.language?.[0]?.code || "en",
         country_code: "LK",
@@ -115,4 +128,5 @@ async function collect() {
   };
 }
 
-module.exports = { source, collect };
+// Results are already limited to Sri Lanka, so the title country lookup is skipped.
+module.exports = { source, collect, countryFromApi: true };

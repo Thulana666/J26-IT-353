@@ -47,13 +47,17 @@ async function getOrCreateSource(supabase, definition) {
 
 // Inserts new articles; URLs already in event_articles are skipped (unique url),
 // so existing rows are never modified and re-running is safe.
-async function saveArticles(supabase, sourceId, articles, collectedAt) {
+async function saveArticles(supabase, sourceId, articles, collectedAt, { countryFromApi = false } = {}) {
   const byUrl = new Map(articles.map((article) => [article.url, article]));
   const rows = [...byUrl.values()].map((article) => ({
     ...article,
-    // A country named in the title wins; otherwise keep the source's default
+    // Sources whose API is already filtered by country (ReliefWeb, GDACS) keep
+    // it: titles there often name donors ("Qatar Charity ... in Sri Lanka").
+    // Otherwise a country named in the title wins over the source's default
     // (e.g. LK for Sri Lankan publishers), or null if there is none.
-    country_code: findCountryCode(article.title) ?? article.country_code,
+    country_code: countryFromApi
+      ? article.country_code
+      : findCountryCode(article.title) ?? article.country_code,
     data_source_id: sourceId,
     fetched_at: collectedAt,
     processing_status: "pending",
@@ -83,7 +87,7 @@ async function collectArticles(supabase, { only } = {}) {
 
   // Sources run one after another; a failure is recorded and the next continues.
   for (const key of keys) {
-    const { source, collect } = SOURCES[key];
+    const { source, collect, countryFromApi } = SOURCES[key];
     const result = { source: source.name, status: "ok", fetched: 0, relevant: 0, inserted: 0, existing: 0 };
     const started = Date.now();
     try {
@@ -93,7 +97,7 @@ async function collectArticles(supabase, { only } = {}) {
         result.error = "Source is disabled (data_sources.is_active = false)";
       } else {
         const { fetched, articles, warnings } = await collect();
-        const saved = await saveArticles(supabase, sourceRow.id, articles, collectedAt);
+        const saved = await saveArticles(supabase, sourceRow.id, articles, collectedAt, { countryFromApi });
         Object.assign(result, { fetched, relevant: articles.length, ...saved });
         if (warnings?.length) result.warnings = warnings;
       }
