@@ -87,7 +87,16 @@ strip). `units_per_pack` is copied onto shipment items at dispatch.
 
 ## Receiving
 
-1. Pharmacy staff create a purchase order (Orders page).
+1. Pharmacy staff create a purchase order (Orders page). Each line shows the
+   **warehouse stock** the pharmacy can order: packs in storage zones of its
+   supplying warehouse, active locations and batches, at least 30 days of shelf
+   life (the same rule as `pharmacy_dispatch_order()`), read live from
+   `warehouse_stock` and re-checked every 30 s. Products the warehouse does not
+   have are marked *Out of Stock at Warehouse* and cannot be selected; a
+   quantity above the warehouse's stock blocks sending. The backend checks the
+   quantities against the warehouse again when the order is sent (409). Stock
+   is not reserved for submitted orders, so dispatch can still fall short if
+   other pharmacies order the same stock first.
 2. The warehouse application dispatches it, writing `shipments` and
    `shipment_items` with its batch details (it may use
    `pharmacy_dispatch_order()`, which picks warehouse stock FEFO).
@@ -215,7 +224,8 @@ and is idempotent: confirming an already received return changes nothing
 | `GET /api/pharmacy/dashboard` | pharmacy | KPIs, trend, alerts, reorder-now list |
 | `GET /api/pharmacy/inventory` · `/lookup?code=` · `/products/:id` | pharmacy | stock by batch · barcode/batch/QR/name → product + FEFO batches · product details, ledger, discrepancies |
 | `POST /api/pharmacy/inventory/adjust` | admin | stock count correction |
-| `GET` · `POST /api/pharmacy/orders` · `GET /:id` · `POST /:id/cancel` | pharmacy | orders (warehouse staff may read) |
+| `GET` · `POST /api/pharmacy/orders` · `GET /:id` · `POST /:id/cancel` | pharmacy | orders (warehouse staff may read); POST refused (409) above the warehouse's stock |
+| `GET /api/pharmacy/orders/warehouse-stock` | pharmacy | packs per product the pharmacy can order from its warehouse |
 | `GET /api/pharmacy/shipments` · `/:id` | pharmacy | shipments with order, items, reports |
 | `POST /api/pharmacy/shipments/:id/receive` | pharmacy | Confirm Receipt (`{ acceptPartial }`), idempotent |
 | `POST /api/pharmacy/shipments/:id/items/:itemId/accept` | pharmacy | accept a held item after resolution |
