@@ -4,7 +4,7 @@ import { safe } from "@/lib/pharmacy/page-data";
 import { RECOMMENDATION_STATUS, coverLabel, formatDate, formatNum, formatQty, packsAndUnits, productLabel, unitLabel } from "@/lib/pharmacy/format";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { StatusBadge, ToneBadge } from "@/components/pharmacy/badges";
-import { DemandForecastChart } from "@/components/pharmacy/charts";
+import { ActualVsEstimatedChart } from "@/components/pharmacy/charts";
 import { PharmacyRealtime } from "@/components/pharmacy/pharmacy-realtime";
 import { RunForecastButton } from "@/components/pharmacy/run-forecast-button";
 import { DefinitionList, EmptyState, LoadError } from "@/components/pharmacy/ui";
@@ -102,7 +102,7 @@ function ProductDetail({ detail }) {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <DemandForecastChart history={detail.history} dailyDemand={live.dailyDemand} unitLabel={units} />
+          <ActualVsEstimatedChart history={detail.history} points={detail.history} unitLabel={units} windowDays={14} />
         </CardContent>
       </Card>
 
