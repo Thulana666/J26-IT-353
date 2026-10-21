@@ -1,6 +1,11 @@
-// /api/pharmacy/analytics - pharmacy-specific demand analytics (moving average).
+// /api/pharmacy/analytics - pharmacy-specific demand analytics.
 //
-// GET  /                      per product: burn rate, usable/incoming stock, stock cover, current Q*
+// Forecasts come from the latest recalculation's model: the pooled linear
+// regression for products where it beat the moving average on held-out days,
+// otherwise the moving average.
+//
+// GET  /                      per product: forecast, method, usable/incoming stock, stock cover, current Q*, reason;
+//                             plus the model and its evaluation
 // GET  /products/:medicineId  daily sales history, actual vs estimated demand, estimate, Q* breakdown
 // POST /run                   recompute estimates, recommendations and alerts now
 // GET  /research?days=90      evaluation metrics from recorded data
@@ -11,7 +16,7 @@ const { unwrap } = require("../errors");
 const { requirePharmacyStaff, pharmacyScope } = require("../auth");
 const { parse, z, id, int, optional } = require("../validation");
 const { toRecommendation, toProduct } = require("../mappers");
-const { loadState, analyzeProduct, estimatesFor, runForecast, unitLabelOf, BACKTEST_DAYS } = require("../analytics/service");
+const { loadState, analyzeProduct, estimatesFor, getActiveModel, runForecast, unitLabelOf, BACKTEST_DAYS } = require("../analytics/service");
 const { backtestMovingAverage, isObserved } = require("../analytics/demand");
 const { researchMetrics } = require("../analytics/research");
 const { round } = require("../analytics/stats");
@@ -70,19 +75,43 @@ const toBurn = (burn) => ({
 
 const toCover = (cover) => ({ days: round(cover.days, 1), status: cover.status, provisional: cover.provisional });
 
+// The trained model's evaluation for the UI (coefficients included for transparency).
+const toModel = (model) =>
+  model && {
+    method: model.method,
+    features: model.features,
+    coefficients: model.coefficients.map((c) => round(c, 4)),
+    trainedOn: model.trainedOn,
+    train: model.train,
+    test: model.test,
+    metrics: model.metrics,
+    units: model.units,
+    trainedAt: model.trainedAt,
+    productsUsingModel: Object.values(model.perProduct ?? {}).filter((p) => p.selected).length,
+    products: Object.keys(model.perProduct ?? {}).length,
+  };
+
 router.get("/", async (req, res) => {
   const pharmacy = req.pharmacy;
-  const [state, recs, run] = await Promise.all([loadState(pharmacy, Math.max(pharmacy.burn_rate_window_days, 30)), latestRecommendations(pharmacy.id), latestRun(pharmacy.id)]);
-  const { byId } = estimatesFor(state.products, pharmacy.burn_rate_window_days);
+  const [state, recs, run, model] = await Promise.all([
+    loadState(pharmacy, Math.max(pharmacy.burn_rate_window_days, 30)),
+    latestRecommendations(pharmacy.id),
+    latestRun(pharmacy.id),
+    getActiveModel(pharmacy.id),
+  ]);
+  const { byId } = estimatesFor(state.products, pharmacy.burn_rate_window_days, model);
   const products = state.products
     .map((p) => {
-      const a = analyzeProduct(p, byId.get(p.medicineId), state.today);
+      const estimate = byId.get(p.medicineId);
+      const a = analyzeProduct(p, estimate, state.today);
       const rec = recs.get(p.medicineId);
       return {
         product: toProduct(p.medicine),
         unitLabel: unitLabelOf(p.medicine),
+        method: estimate.model,
+        forecastDaily: round(a.reorder.dailyDemand, 2),
         burnRate: toBurn(a.burn),
-        stock: { available: p.stock.available, onHandUsable: p.stock.onHandUsable, reserved: p.stock.reserved, incoming: p.incoming },
+        stock: { available: p.stock.available, onHandUsable: p.stock.onHandUsable, reserved: p.stock.reserved, incoming: p.incoming, awaiting: p.awaiting },
         stockCover: toCover(a.cover),
         live: {
           inventoryPosition: round(a.reorder.inventoryPosition),
@@ -91,12 +120,13 @@ router.get("/", async (req, res) => {
           recommendedPacks: a.reorder.recommendedPacks,
           needsReorder: a.reorder.needsReorder,
         },
+        reason: a.reason,
         last30: p.days.slice(-30).map((d) => d.sold),
         recommendation: rec ? toRecommendation(rec) : null,
       };
     })
     .sort((a, b) => (a.product?.name ?? "").localeCompare(b.product?.name ?? ""));
-  res.json({ today: state.today, windowDays: pharmacy.burn_rate_window_days, run: toRun(run), products });
+  res.json({ today: state.today, windowDays: pharmacy.burn_rate_window_days, run: toRun(run), model: toModel(model), products });
 });
 
 const productQuery = z.object({ days: optional(int(14, 365)) });
@@ -107,12 +137,12 @@ router.get("/products/:medicineId", async (req, res) => {
   const pharmacy = req.pharmacy;
   const windowDays = pharmacy.burn_rate_window_days;
   // Extra history so the first shown day has a full window for its estimate.
-  const [state, recs] = await Promise.all([loadState(pharmacy, days + windowDays), latestRecommendations(pharmacy.id)]);
+  const [state, recs, model] = await Promise.all([loadState(pharmacy, days + windowDays), latestRecommendations(pharmacy.id), getActiveModel(pharmacy.id)]);
   const product = state.products.find((p) => p.medicineId === medicineId);
   if (!product) {
     return res.json({ today: state.today, product: null, unitLabel: "units", history: [], backtest: null, estimate: null, recommendation: null });
   }
-  const { byId } = estimatesFor([product], windowDays);
+  const { byId } = estimatesFor([product], windowDays, model);
   const estimate = byId.get(medicineId);
   const a = analyzeProduct(product, estimate, state.today);
   const backtest = backtestMovingAverage(product.days, { window: windowDays, testDays: days });
@@ -136,9 +166,15 @@ router.get("/products/:medicineId", async (req, res) => {
       })(),
     },
     estimate: { model: estimate.model, daily: round(estimate.level, 3), horizonDays: estimate.forecast.length },
+    // Forecast for the coming days (units/day), as used by Q*.
+    forecast: estimate.forecast.map((v) => round(v, 2)),
+    method: estimate.model,
+    modelEvaluation: model?.perProduct?.[medicineId] ?? null,
+    modelTrainedOn: model?.trainedOn ?? null,
+    reason: a.reason,
     burnRate: toBurn(a.burn),
     stockCover: toCover(a.cover),
-    stock: { ...product.stock, incoming: product.incoming },
+    stock: { ...product.stock, incoming: product.incoming, awaiting: product.awaiting },
     settings: product.settings,
     live: {
       dailyDemand: round(a.reorder.dailyDemand, 3),

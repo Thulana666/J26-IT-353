@@ -8,6 +8,7 @@
     "start": "node server.js",
     "collect:articles": "node scripts/collect-articles.js",
     "backfill:countries": "node scripts/backfill-article-countries.js",
+    "train:pharmacy-model": "node scripts/train-pharmacy-model.js",
     "test": "node --test"
   },
   "keywords": [
