@@ -63,6 +63,9 @@ function toStockItem(row) {
   return {
     stockId: row.stock_id,
     quantity: row.quantity,
+    // Packs reserved for pharmacy orders stay here until dispatch.
+    quantityReserved: row.quantity_reserved ?? 0,
+    quantityAvailable: row.quantity_available ?? row.quantity,
     placedAt: row.placed_at,
     batchId: row.batch_id,
     batchNumber: row.batch_number,

@@ -2,9 +2,8 @@
 
 const express = require("express");
 const store = require("../store");
-const { HttpError, unwrap } = require("../errors");
+const { unwrap } = require("../errors");
 const { rules, validate } = require("../validation");
-const { requireActive } = require("../auth");
 const { todayISO } = require("../dates");
 const { classifyExpiry, thresholdsOf } = require("../expiry");
 const { buildPickList } = require("../fefo");
@@ -107,53 +106,36 @@ router.get("/pick", async (req, res) => {
   });
 });
 
-// POST /api/warehouse/fefo/dispatch { warehouseId, medicineId, quantity, reference?, notes? }
-// Dispatches `quantity` units following the FEFO pick list (all picks FEFO-compliant).
-router.post("/dispatch", requireActive, async (req, res) => {
+// POST /api/warehouse/fefo/dispatch { warehouseId, medicineId, quantity, reference?, notes?, clientRequestId? }
+// Dispatches loose stock (not a pharmacy order) in FEFO order, all or nothing
+// in one transaction (warehouse_fefo_dispatch()); stock reserved for orders is
+// never taken. A repeated clientRequestId records nothing new.
+router.post("/dispatch", async (req, res) => {
   const values = validate(req.body, {
     ...pickSchema,
     reference: rules.string({ max: 120 }),
     notes: rules.string({ max: 1000 }),
+    clientRequestId: rules.uuid(),
   });
-  const today = todayISO();
-  const stock = await store.getStock({ warehouseId: values.warehouseId, medicineId: values.medicineId });
-  const plan = buildPickList(stock, values.quantity, today);
-  if (plan.shortfall > 0) {
-    throw new HttpError(
-      409,
-      `Only ${plan.available} unit(s) can be dispatched (FEFO-eligible stock); ${values.quantity} requested`
-    );
-  }
-
-  const ids = [];
-  for (const line of plan.lines) {
-    try {
-      const row = await store.callMovementFunction(
-        {
-          batchId: line.batchId,
-          movementType: "dispatch",
-          quantity: line.pickQuantity,
-          fromLocationId: line.storageLocationId,
-          reference: values.reference,
-          notes: values.notes,
-        },
-        { userId: req.user.id, today, fefoCompliant: true }
-      );
-      ids.push(row.id);
-    } catch (error) {
-      if (ids.length === 0) throw error;
-      throw new HttpError(
-        409,
-        `Dispatch stopped after ${ids.length} of ${plan.lines.length} pick(s): ${error.message}. The completed picks were recorded.`,
-        { completedMovementIds: ids }
-      );
-    }
-  }
-
-  const rows = unwrap(
-    await supabase.from("inventory_movements").select(store.MOVEMENT_SELECT).in("id", ids).order("created_at")
-  );
-  res.status(201).json({ allocated: plan.allocated, movements: await mapMovements(rows) });
+  const result = await store.rpc("warehouse_fefo_dispatch", {
+    p_warehouse_id: values.warehouseId,
+    p_medicine_id: values.medicineId,
+    p_quantity: values.quantity,
+    p_user_id: req.user.id,
+    p_reference: values.reference ?? null,
+    p_notes: values.notes ?? null,
+    p_today: todayISO(),
+    p_client_request_id: values.clientRequestId ?? null,
+  });
+  const ids = result.movementIds ?? [];
+  const rows = ids.length
+    ? unwrap(await supabase.from("inventory_movements").select(store.MOVEMENT_SELECT).in("id", ids).order("created_at"))
+    : [];
+  res.status(result.duplicate ? 200 : 201).json({
+    duplicate: result.duplicate,
+    allocated: values.quantity,
+    movements: await mapMovements(rows),
+  });
 });
 
 // GET /api/warehouse/fefo/compliance?warehouseId=&days=30

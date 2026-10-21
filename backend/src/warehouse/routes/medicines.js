@@ -4,7 +4,7 @@ const express = require("express");
 const store = require("../store");
 const { HttpError, unwrap } = require("../errors");
 const { rules, validate, toColumns } = require("../validation");
-const { requireAdmin } = require("../auth");
+const { requireAdmin, requireStaff } = require("../auth");
 const { toMedicine } = require("../mappers");
 const { STORAGE_CONDITIONS } = require("../constants");
 
@@ -38,7 +38,7 @@ function medicineSchema(creating) {
 }
 
 // GET /api/medicines?q=&active=
-router.get("/", async (req, res) => {
+router.get("/", requireStaff, async (req, res) => {
   const { q, active } = validate(req.query, { q: rules.string({ max: 100 }), active: rules.bool() });
   const rows = await store.fetchAll(() => supabase.from("medicines").select(store.MEDICINE_SELECT).order("id"));
   const needle = q?.toLowerCase();
@@ -51,12 +51,12 @@ router.get("/", async (req, res) => {
 });
 
 // GET /api/medicines/categories - Component 1's medicine categories, for forms.
-router.get("/categories", async (_req, res) => {
+router.get("/categories", requireStaff, async (_req, res) => {
   const rows = unwrap(await supabase.from("medicine_categories").select("id, name").order("name"));
   res.json({ categories: rows });
 });
 
-router.get("/:id", async (req, res) => {
+router.get("/:id", requireStaff, async (req, res) => {
   const { id } = validate(req.params, { id: rules.uuid({ required: true }) });
   res.json({ medicine: toMedicine(await store.getMedicine(id)) });
 });

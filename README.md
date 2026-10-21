@@ -82,6 +82,20 @@ others; a source without its key is reported as skipped. Set
 asks for at most one request per hour, and ReliefWeb's robots.txt disallows
 automated RSS access (hence its API is used).
 
+## IoT cold-chain tracking & logistics risk (Component 2)
+
+Trips for dispatched shipments: drivers and refrigerated trucks, allocation,
+live sensor readings from ESP32 loggers (temperature, humidity, GPS, speed),
+alerts, predicted risk (a temporary, labelled rule-based prototype until the
+models in `ai-service/cold_chain/` are trained on real trips and installed),
+delivery and history, under **Cold Chain** in the sidebar. Apply
+`supabase/migrations/20261017000000_create_cold_chain_schema.sql`,
+`20261018000002_cold_chain_logistics.sql`,
+`20261018000003_cold_chain_driver_portal.sql` and
+`20261019000000_cold_chain_trained_risk.sql` after the pharmacy and warehouse
+migrations, and run the backend. Workflow, device API, dashboard API, risk
+prediction and testing: [docs/component-2-cold-chain.md](docs/component-2-cold-chain.md).
+
 ## Warehouse FEFO & QR (Component 3)
 
 FEFO inventory, QR batch labels/scanning, movement history and storage-location
@@ -89,3 +103,18 @@ recommendations, under **Warehouse** in the sidebar. Apply
 `supabase/migrations/20261008000000_create_warehouse_schema.sql`, run the
 backend and the Python service in `ai-service/`. Architecture, API, database,
 FEFO/QR/allocation logic and setup: [docs/component-3-warehouse.md](docs/component-3-warehouse.md).
+
+## Pharmacy analytics & stock optimisation (Component 4)
+
+Batch-level pharmacy inventory, receiving (Confirm Receipt for matching
+deliveries; scan only disputed items to report discrepancies), POS billing
+(FEFO), purchase orders and returns shared with the warehouse application, and
+lightweight analytics: burn rate, stock cover, moving-average demand and
+rule-based reorder quantities (Q*), under **Pharmacy** in the sidebar. Apply
+`supabase/migrations/20261010000000_create_pharmacy_schema.sql`,
+`20261010000001_create_pharmacy_functions.sql`,
+`20261012000000_update_pharmacy_receiving.sql` and
+`20261016000000_pharmacy_inventory_holds.sql` in order, optionally run
+`supabase/seed/sample_pharmacy.sql` (SAMPLE pharmacies with synthetic history),
+and run the backend. Roles, workflows, formulas, the warehouse integration
+contract and setup: [docs/component-4-pharmacy.md](docs/component-4-pharmacy.md).

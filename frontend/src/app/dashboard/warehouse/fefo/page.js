@@ -288,7 +288,7 @@ function PickList({ pick }) {
         </p>
       )}
       {pick.shortfall === 0 && pick.lines.length > 0 && (
-        <ActionForm action={dispatchFefoAction} submitLabel="Dispatch these picks" pendingLabel="Dispatching…">
+        <ActionForm idempotent action={dispatchFefoAction} submitLabel="Dispatch these picks" pendingLabel="Dispatching…">
           <input type="hidden" name="warehouseId" value={pick.warehouse.id} />
           <input type="hidden" name="medicineId" value={pick.medicine.id} />
           <input type="hidden" name="quantity" value={pick.requested} />
