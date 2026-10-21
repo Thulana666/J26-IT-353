@@ -4,17 +4,20 @@
 //   1. daily units sold per product from the pharmacy's own sale items, with
 //      the closing stock of each day from the stock ledger
 //      (pharmacy_daily_demand()),
-//   2. a moving-average demand estimate per product (forecast-provider.js;
-//      replaceable by a future ML provider with the same interface),
+//   2. trains the pooled linear-regression demand model (linear-regression.js)
+//      and evaluates it against the moving average on held-out days; each
+//      product uses the regression only where it was more accurate, otherwise
+//      the moving average (forecast-provider.js),
 //   3. burn rate, stock cover, Q*, stockout and expiry risk per product, and an
 //      actual-versus-estimated backtest of the moving average,
 //   4. stores the run, the estimates and the recommendations, then refreshes
 //      alerts. Re-running it after new sales and receipts updates everything.
 
-const { supabase, today, addDays, rpc, getInventory, getIncomingUnits, getDailyDemand, getReorderSettings, getMedicines } = require("../store");
+const { supabase, today, addDays, rpc, getInventory, getOrderedUnits, getDailyDemand, getReorderSettings, getMedicines } = require("../store");
 const { unwrap } = require("../errors");
 const { daysBetween } = require("../dates");
 const { round } = require("./stats");
+const { FEATURES, LOOKBACK, evaluateHoldout, fitRidge } = require("./linear-regression");
 const { getProvider } = require("./forecast-provider");
 const { backtestMovingAverage, consumptionChange } = require("./demand");
 const { computeReorder, explain } = require("./reorder");
@@ -24,6 +27,15 @@ const { buildAlerts } = require("./alert-rules");
 const HISTORY_DAYS = Number(process.env.PHARMACY_HISTORY_DAYS) || 180;
 const HORIZON_DAYS = 30;
 const BACKTEST_DAYS = 28;
+
+// Demand model training. Real POS history is used once it covers at least
+// MIN_REAL_HISTORY_DAYS; until then the model is trained on the labelled sample
+// history (sales.source = 'synthetic_seed') as a demonstration of the method.
+const MIN_REAL_HISTORY_DAYS = 90;
+const MODEL_TEST_DAYS = 28;
+const MODEL_LAMBDA = 1;
+// Held-out days a product needs before its own comparison selects the model.
+const MIN_SELECT_OBSERVATIONS = 14;
 
 // "strip of 10 tablets" -> "strips", "single-dose vial" -> "vials".
 function unitLabelOf(product) {
@@ -71,9 +83,9 @@ async function loadState(pharmacy, historyDays = HISTORY_DAYS) {
   const todayISO = today();
   const from = addDays(todayISO, -historyDays);
   const to = addDays(todayISO, -1);
-  const [inventory, incoming, settings, demandRows, medicines] = await Promise.all([
+  const [inventory, ordered, settings, demandRows, medicines] = await Promise.all([
     getInventory(pharmacy.id),
-    getIncomingUnits(pharmacy.id),
+    getOrderedUnits(pharmacy.id),
     getReorderSettings(pharmacy.id),
     getDailyDemand(pharmacy.id, from, to),
     getMedicines({ activeOnly: false }),
@@ -97,7 +109,10 @@ async function loadState(pharmacy, historyDays = HISTORY_DAYS) {
     rows,
     days: (days.get(medicineId) ?? []).sort((a, b) => (a.date < b.date ? -1 : 1)),
     stock: stockOf(rows, todayISO),
-    incoming: incoming.get(medicineId) ?? 0,
+    // Confirmed incoming (in transit or accepted by the warehouse); counted in the position.
+    incoming: ordered.incoming.get(medicineId) ?? 0,
+    // Ordered but not yet accepted by the warehouse; reported, not counted.
+    awaiting: ordered.awaiting.get(medicineId) ?? 0,
     settings: resolveSettings(pharmacy, settings.get(medicineId)),
   }));
   return { today: todayISO, from, to, inventory, products };
@@ -121,7 +136,8 @@ function analyzeProduct(p, estimate, todayISO) {
     minOrderPacks: settings.minOrderPacks,
     maxStockUnits: settings.maxStockUnits,
   });
-  const cover = stockCover(stock.available, burn);
+  // Stock cover uses the forecast daily demand, the same demand Q* uses.
+  const cover = stockCover(stock.available, burn.rate === null ? burn : { ...burn, rate: reorder.dailyDemand });
   const stockout = depletion(stock.available, estimate.forecast, todayISO);
   const positionCover = depletion(reorder.inventoryPosition, estimate.forecast, todayISO).daysOfCover;
   return {
@@ -133,11 +149,27 @@ function analyzeProduct(p, estimate, todayISO) {
     expiry: expiryRisk(stock.batches, estimate.forecast, todayISO),
     unitsPerPack,
     provisional: burn.status === "no_history" || burn.status === "insufficient_history",
+    reason: replenishmentReason({ reorder, cover }, p, unitLabelOf(medicine)),
   };
 }
 
-function estimatesFor(products, windowDays) {
-  const provider = getProvider();
+// One-line explanation of the recommendation, shown with Q*.
+function replenishmentReason({ reorder, cover }, p, units) {
+  const n = (value) => Math.round(value).toLocaleString("en-US");
+  const awaiting = p.awaiting > 0 ? ` ${n(p.awaiting)} ${units} ordered are awaiting warehouse acceptance and are not counted.` : "";
+  if (!(reorder.dailyDemand > 0)) return `No recent demand, so nothing to reorder.${awaiting}`;
+  if (reorder.needsReorder) {
+    return `Reorder: inventory position ${n(reorder.inventoryPosition)} ${units} is at or below the reorder point ${n(reorder.reorderPoint)} (lead-time demand + safety stock).${awaiting}`;
+  }
+  if (cover.status === "out_of_stock" && p.incoming > 0) {
+    return `Out of stock now, but ${n(p.incoming)} ${units} on the way keep the position above the reorder point ${n(reorder.reorderPoint)}.${awaiting}`;
+  }
+  return `No order needed: inventory position ${n(reorder.inventoryPosition)} ${units} is above the reorder point ${n(reorder.reorderPoint)}.${awaiting}`;
+}
+
+// model: a trained model (summary.model of a run) or null for the moving average.
+function estimatesFor(products, windowDays, model = null) {
+  const provider = getProvider(model);
   const results = provider.forecast({
     series: products.map((p) => ({ id: p.medicineId, days: p.days })),
     horizonDays: HORIZON_DAYS,
@@ -163,15 +195,112 @@ async function syntheticShare(pharmacyId, from) {
   return { synthetic, pos, share: total === 0 ? 0 : synthetic / total };
 }
 
-async function runForecast(pharmacy, userId = null) {
-  const todayISO = today();
-  const windowDays = pharmacy.burn_rate_window_days;
+// First and last local sale dates of one data source, or null.
+async function saleDateRange(pharmacyId, source) {
+  const edge = (ascending) =>
+    supabase
+      .from("sales")
+      .select("sold_at")
+      .eq("pharmacy_id", pharmacyId)
+      .eq("source", source)
+      .order("sold_at", { ascending })
+      .limit(1)
+      .maybeSingle()
+      .then(unwrap);
+  const [first, last] = await Promise.all([edge(true), edge(false)]);
+  return first ? { from: today(new Date(first.sold_at)), to: today(new Date(last.sold_at)) } : null;
+}
+
+// Which history the model is trained on (see MIN_REAL_HISTORY_DAYS).
+async function trainingPeriod(pharmacyId) {
+  const yesterday = addDays(today(), -1);
+  const [pos, sample] = await Promise.all([saleDateRange(pharmacyId, "pos"), saleDateRange(pharmacyId, "synthetic_seed")]);
+  if (pos && daysBetween(pos.from, yesterday) + 1 >= MIN_REAL_HISTORY_DAYS) return { source: "pos", from: pos.from, to: yesterday };
+  if (sample) return { source: "synthetic_seed", from: sample.from, to: sample.to };
+  return null;
+}
+
+const roundMetrics = (m) => ({ mae: round(m.mae, 3), rmse: round(m.rmse, 3) });
+
+// Trains and evaluates the demand model for one pharmacy. Read-only.
+// -> { status: "trained", model } | { status, reason, period }
+async function trainDemandModel(pharmacy) {
+  const period = await trainingPeriod(pharmacy.id);
+  if (!period) return { status: "no_history", reason: "No sales history to train on." };
+  const rows = await getDailyDemand(pharmacy.id, period.from, period.to);
+  const byMedicine = new Map();
+  for (const row of rows) {
+    if (!byMedicine.has(row.medicine_id)) byMedicine.set(row.medicine_id, []);
+    byMedicine.get(row.medicine_id).push({ date: row.day, sold: row.quantity_sold, closingOnHand: row.closing_on_hand });
+  }
+  const series = [...byMedicine.entries()].map(([id, days]) => ({ id, days: days.sort((a, b) => (a.date < b.date ? -1 : 1)) }));
+  const holdout = evaluateHoldout(series, { testDays: MODEL_TEST_DAYS, lambda: MODEL_LAMBDA });
+  if (!holdout) {
+    return { status: "insufficient_history", reason: `Not enough history from ${period.from} to ${period.to} for a ${MODEL_TEST_DAYS}-day holdout.`, period };
+  }
+  const perProduct = {};
+  for (const [id, s] of Object.entries(holdout.perSeries)) {
+    perProduct[id] = {
+      observations: s.observations,
+      linearRegression: roundMetrics(s.linearRegression),
+      movingAverage: roundMetrics(s.movingAverage),
+      residualSd: round(s.residualSd, 3),
+      // The regression is used for this product only if it beat the baseline here.
+      selected: s.observations >= MIN_SELECT_OBSERVATIONS && s.linearRegression.mae < s.movingAverage.mae,
+    };
+  }
+  return {
+    status: "trained",
+    model: {
+      method: "linear_regression",
+      version: 1,
+      units: "dispensing units per day",
+      features: FEATURES,
+      // Refitted on every row (training + held-out days) after the evaluation.
+      coefficients: fitRidge(holdout.allRows, MODEL_LAMBDA),
+      lambda: MODEL_LAMBDA,
+      lookbackDays: LOOKBACK,
+      trainedAt: new Date().toISOString(),
+      trainedOn: { source: period.source, sample: period.source === "synthetic_seed", from: period.from, to: period.to, rows: holdout.allRows.length },
+      train: holdout.train,
+      test: holdout.test,
+      metrics: { linearRegression: roundMetrics(holdout.overall.linearRegression), movingAverage: roundMetrics(holdout.overall.movingAverage) },
+      perProduct,
+    },
+  };
+}
+
+// The model of the latest completed recalculation, or null (moving average).
+async function getActiveModel(pharmacyId) {
   const run = unwrap(
     await supabase
       .from("pharmacy_forecast_runs")
+      .select("engine, summary")
+      .eq("pharmacy_id", pharmacyId)
+      .eq("status", "completed")
+      .order("started_at", { ascending: false })
+      .limit(1)
+      .maybeSingle()
+  );
+  return run?.engine === "linear_regression" ? (run.summary?.model ?? null) : null;
+}
+
+async function runForecast(pharmacy, userId = null) {
+  const todayISO = today();
+  const windowDays = pharmacy.burn_rate_window_days;
+  let training;
+  try {
+    training = await trainDemandModel(pharmacy);
+  } catch (error) {
+    training = { status: "failed", reason: String(error.message).slice(0, 300) };
+  }
+  let model = training.status === "trained" ? training.model : null;
+  const insertRun = (engine) =>
+    supabase
+      .from("pharmacy_forecast_runs")
       .insert({
         pharmacy_id: pharmacy.id,
-        engine: "moving_average",
+        engine,
         horizon_days: HORIZON_DAYS,
         test_days: BACKTEST_DAYS,
         history_start: addDays(todayISO, -HISTORY_DAYS),
@@ -179,12 +308,19 @@ async function runForecast(pharmacy, userId = null) {
         triggered_by: userId,
       })
       .select("id")
-      .single()
-  );
+      .single();
+  let inserted = await insertRun(model ? "linear_regression" : "moving_average");
+  // Database without 20261020000000: keep working with the moving average.
+  const migrationMissing = Boolean(model) && inserted.error?.code === "23514";
+  if (migrationMissing) {
+    model = null;
+    inserted = await insertRun("moving_average");
+  }
+  const run = unwrap(inserted);
 
   try {
     const state = await loadState(pharmacy);
-    const { provider, byId } = estimatesFor(state.products, windowDays);
+    const { provider, byId } = estimatesFor(state.products, windowDays, model);
 
     const forecastRows = [];
     const recommendationRows = [];
@@ -216,6 +352,7 @@ async function runForecast(pharmacy, userId = null) {
         days_used: a.burn.daysUsed,
         total_sold: a.burn.totalSold,
         stockout_days: a.burn.stockoutDays,
+        model_evaluation: model?.perProduct?.[p.medicineId] ?? null,
         backtest: backtest.sufficient
           ? { days: backtest.points.length, mae: round(backtest.mae, 3), rmse: round(backtest.rmse, 3), bias: round(backtest.bias, 3) }
           : null,
@@ -263,7 +400,10 @@ async function runForecast(pharmacy, userId = null) {
         }),
         assumptions: {
           policy: "rule-based order-up-to: Q* = max(0, target stock - inventory position); not EOQ",
-          demand_estimate: `moving average of the last ${windowDays} days`,
+          demand_estimate:
+            estimate.model === "linear_regression"
+              ? "pooled linear regression (previous day, same day last week, 7-day mean, day of week), forecast day by day"
+              : `moving average of the last ${windowDays} days`,
           burn_rate_status: a.burn.status,
           burn_rate_days_used: a.burn.daysUsed,
           stockout_days_in_window: a.burn.stockoutDays,
@@ -297,11 +437,19 @@ async function runForecast(pharmacy, userId = null) {
       with_quantity: recommendationRows.filter((r) => r.recommended_packs > 0).length,
       synthetic_sales: synthetic.synthetic,
       pos_sales: synthetic.pos,
+      model_products: [...byId.values()].filter((e) => e.model === "linear_regression").length,
+      training: { status: training.status, reason: training.reason ?? null, period: training.period ?? null, migration_missing: migrationMissing },
+      model,
     };
-    const dataNote =
-      synthetic.share > 0
-        ? `${Math.round(synthetic.share * 100)}% of the sales in the ${windowDays}-day window are synthetic seed data (sales.source = 'synthetic_seed'), not real transactions.`
-        : null;
+    const notes = [];
+    if (synthetic.share > 0) {
+      notes.push(`${Math.round(synthetic.share * 100)}% of the sales in the ${windowDays}-day window are synthetic seed data (sales.source = 'synthetic_seed'), not real transactions.`);
+    }
+    if (model?.trainedOn.sample) {
+      notes.push(`The linear regression was trained and evaluated on sample (synthetic) history from ${model.trainedOn.from} to ${model.trainedOn.to}: a demonstration of the method, not real-world accuracy.`);
+    }
+    if (migrationMissing) notes.push("Linear regression not used: apply supabase/migrations/20261020000000_pharmacy_linear_regression_model.sql.");
+    const dataNote = notes.join(" ") || null;
 
     const finished = unwrap(
       await supabase
@@ -333,8 +481,8 @@ async function runForecast(pharmacy, userId = null) {
 // moving average, and syncs pharmacy_alerts: new conditions are inserted,
 // existing ones updated (keeping acknowledged status), cleared ones resolved.
 async function refreshAlerts(pharmacy) {
-  const state = await loadState(pharmacy, Math.max(pharmacy.burn_rate_window_days, 42));
-  const { byId } = estimatesFor(state.products, pharmacy.burn_rate_window_days);
+  const [state, model] = await Promise.all([loadState(pharmacy, Math.max(pharmacy.burn_rate_window_days, 42)), getActiveModel(pharmacy.id)]);
+  const { byId } = estimatesFor(state.products, pharmacy.burn_rate_window_days, model);
 
   const products = [];
   const batches = [];
@@ -445,6 +593,9 @@ module.exports = {
   stockOf,
   analyzeProduct,
   estimatesFor,
+  trainDemandModel,
+  getActiveModel,
+  replenishmentReason,
   runForecast,
   refreshAlerts,
   refreshAlertsQuietly,
