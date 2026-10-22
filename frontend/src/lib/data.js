@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { demand, events, forecasts, medicineImpacts } from "@/lib/mock-data";
+import { NEWS_PER_PAGE, NEWS_COLUMNS, applyNewsQuery, toNewsItem } from "@/lib/news";
 
 // Data access for the dashboard. Functions backed by Supabase use the
 // signed-in user's session, so row level security applies. The rest still
@@ -60,14 +61,17 @@ export async function getArticlesPage(requestedPage = 1) {
 
   let articles = [];
   if (ids.length > 0) {
-    const { data, error } = await supabase
-      .from("event_articles")
-      .select(
-        `id, title, url, country_code, language, processing_status, published_at, fetched_at,
+    const base = `id, title, url, country_code, language, processing_status, published_at, fetched_at,
          source:data_sources (name, source_type, country_code),
-         event:events (title)`
-      )
+         event:events (title)`;
+    let { data, error } = await supabase
+      .from("event_articles")
+      .select(`${base}, ${ANALYSIS_COLUMNS}`)
       .in("id", ids);
+    // Before the analysis migration is applied, show the articles without analysis.
+    if (error && isMissingColumn(error)) {
+      ({ data, error } = await supabase.from("event_articles").select(base).in("id", ids));
+    }
     if (error) throw new Error(`Could not load articles: ${error.message}`);
     const byId = new Map(data.map((row) => [row.id, row]));
     articles = ids.map((id) => byId.get(id)).filter(Boolean).map(toArticle);
@@ -98,6 +102,151 @@ function toArticle(row) {
     publishedAt: row.published_at,
     fetchedAt: row.fetched_at,
     eventTitle: row.event?.title ?? null,
+    // NLP analysis (null until processed; see supabase/migrations/20261021000000_*).
+    eventCategory: row.event_category ?? null,
+    sriLankaRelevance: row.sri_lanka_relevance ?? null,
+    relevanceReason: row.relevance_reason ?? null,
+    needsReview: row.needs_review ?? false,
+    processingError: row.processing_error ?? null,
+  };
+}
+
+const ANALYSIS_COLUMNS = "processing_error, event_category, sri_lanka_relevance, relevance_reason, needs_review";
+// PostgREST / Postgres "column does not exist".
+const isMissingColumn = (error) => error?.code === "42703" || /column .* does not exist/i.test(error?.message ?? "");
+
+// Article counts per processing state, plus processed articles awaiting human review.
+export async function getArticleProcessingCounts() {
+  const supabase = await createClient();
+  const count = async (build) => {
+    const { count, error } = await build(supabase.from("event_articles").select("id", { count: "exact", head: true }));
+    if (error) throw error;
+    return count ?? 0;
+  };
+  const statuses = ["pending", "processing", "processed", "failed"];
+  const values = await Promise.all(statuses.map((s) => count((q) => q.eq("processing_status", s))));
+  const counts = Object.fromEntries(statuses.map((s, i) => [s, values[i]]));
+  try {
+    counts.needsReview = await count((q) => q.eq("needs_review", true));
+  } catch (error) {
+    if (!isMissingColumn(error)) throw new Error(`Could not count articles: ${error.message}`);
+    counts.needsReview = null; // migration not applied yet
+  }
+  return counts;
+}
+
+// Recent News: analysed articles with a direct, indirect or uncertain Sri Lankan
+// connection, newest publication first (see lib/news.js for filters).
+export async function getRecentNews(filters) {
+  const supabase = await createClient();
+  const { data, error, count } = await applyNewsQuery(
+    supabase.from("event_articles").select(NEWS_COLUMNS, { count: "exact" }),
+    filters
+  );
+  if (error) {
+    // Asking for a page past the end (e.g. after narrowing a filter) is not an error.
+    if (error.code === "PGRST103") return { items: [], total: count ?? 0, page: filters.page, pageCount: 1 };
+    throw new Error(`Could not load news: ${error.message}`);
+  }
+  const total = count ?? 0;
+  return { items: data.map(toNewsItem), total, page: filters.page, pageCount: Math.max(1, Math.ceil(total / NEWS_PER_PAGE)) };
+}
+
+// When news data last changed: newest collection and newest completed analysis,
+// read from the database (so it is right even when the backend is not running).
+export async function getNewsFreshness() {
+  const supabase = await createClient();
+  const latest = async (column) => {
+    const { data, error } = await supabase
+      .from("event_articles")
+      .select(column)
+      .not(column, "is", null)
+      .order(column, { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new Error(`Could not read ${column}: ${error.message}`);
+    return data?.[column] ?? null;
+  };
+  const count = async (status) => {
+    const { count, error } = await supabase.from("event_articles").select("id", { count: "exact", head: true }).eq("processing_status", status);
+    if (error) throw new Error(`Could not count articles: ${error.message}`);
+    return count ?? 0;
+  };
+  const [lastCollectedAt, lastAnalysedAt, pending, failed] = await Promise.all([
+    latest("fetched_at"), latest("processed_at"), count("pending"), count("failed"),
+  ]);
+  return { lastCollectedAt, lastAnalysedAt, pending, failed };
+}
+
+// Totals for the Recent News summary cards (same base set as the list, no filters).
+export async function getNewsSummary() {
+  const supabase = await createClient();
+  const base = () =>
+    supabase
+      .from("event_articles")
+      .select("id", { count: "exact", head: true })
+      .eq("processing_status", "processed")
+      .or("event_category.is.null,event_category.neq.other");
+  const run = async (q) => {
+    const { count, error } = await q;
+    if (error) throw new Error(`Could not count news: ${error.message}`);
+    return count ?? 0;
+  };
+  const [direct, indirect, uncertain, review] = await Promise.all([
+    run(base().eq("sri_lanka_relevance", "direct")),
+    run(base().eq("sri_lanka_relevance", "indirect")),
+    run(base().eq("sri_lanka_relevance", "uncertain")),
+    run(base().in("sri_lanka_relevance", ["direct", "indirect", "uncertain"]).eq("needs_review", true)),
+  ]);
+  return { direct, indirect, uncertain, review };
+}
+
+// Sources for the Recent News source filter.
+export async function getNewsSources() {
+  const supabase = await createClient();
+  const { data, error } = await supabase.from("data_sources").select("id, name").order("name");
+  if (error) throw new Error(`Could not load sources: ${error.message}`);
+  return data;
+}
+
+// Events generated by the NLP pipeline from collected articles, newest first.
+export async function getDetectedEvents() {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("events")
+    .select(
+      `id, title, event_type, severity, status, scope, started_at, sri_lanka_relevance, needs_review, analysis,
+       disease:diseases (name),
+       locations:event_locations (is_primary, location:locations (name, location_type)),
+       articles:event_articles (count)`
+    )
+    .eq("generated_by", "nlp_pipeline")
+    .order("started_at", { ascending: false })
+    .limit(200);
+  if (error) {
+    if (isMissingColumn(error)) return { events: [], migrationMissing: true };
+    throw new Error(`Could not load events: ${error.message}`);
+  }
+  return {
+    migrationMissing: false,
+    events: data.map((row) => ({
+      id: row.id,
+      title: row.title,
+      eventType: row.event_type,
+      category: row.analysis?.category ?? null,
+      severity: row.severity,
+      status: row.status,
+      scope: row.scope,
+      startedAt: row.started_at,
+      sriLankaRelevance: row.sri_lanka_relevance,
+      needsReview: row.needs_review,
+      disease: row.disease?.name ?? null,
+      locations: [...(row.locations ?? [])]
+        .sort((a, b) => Number(b.is_primary) - Number(a.is_primary))
+        .map((l) => l.location?.name)
+        .filter(Boolean),
+      articleCount: row.articles?.[0]?.count ?? 0,
+    })),
   };
 }
 

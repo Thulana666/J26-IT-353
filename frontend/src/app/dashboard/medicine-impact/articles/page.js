@@ -1,7 +1,7 @@
 import { unstable_rethrow } from "next/navigation";
 import { requireUser } from "@/lib/auth";
-import { getArticlesPage } from "@/lib/data";
-import { formatCountry, formatDate, formatLanguage } from "@/lib/format";
+import { getArticleProcessingCounts, getArticlesPage } from "@/lib/data";
+import { RELEVANCE_LABELS, formatCountry, formatDate, formatLanguage } from "@/lib/format";
 import { getNavItem } from "@/lib/navigation";
 import { AnimatedIcon } from "@/components/icons/animated-icon";
 import { BadgeAlertIcon } from "@/components/icons/badge-alert";
@@ -11,6 +11,7 @@ import { PagePagination } from "@/components/dashboard/page-pagination";
 import { RefreshArticlesButton } from "@/components/dashboard/refresh-articles-button";
 import { StatusBadge } from "@/components/dashboard/status-badges";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -47,9 +48,10 @@ export default async function ArticlesPage({ searchParams }) {
   const canRefresh = profile?.role === "admin" && profile?.status === "active";
 
   let result = null;
+  let counts = null;
   let loadError = null;
   try {
-    result = await getArticlesPage(requestedPage);
+    [result, counts] = await Promise.all([getArticlesPage(requestedPage), getArticleProcessingCounts()]);
   } catch (error) {
     // Let Next.js handle its own control-flow errors (redirects, dynamic rendering).
     unstable_rethrow(error);
@@ -81,6 +83,12 @@ export default async function ArticlesPage({ searchParams }) {
               {result.hidden > 0 &&
                 ` (${result.hidden} older report${result.hidden === 1 ? "" : "s"} with the same title hidden)`}
               .
+              {counts && (
+                <span className="mt-1 block">
+                  {`Analysis: ${counts.pending} awaiting, ${counts.processing} in progress, ${counts.processed} processed, ${counts.failed} failed`}
+                  {counts.needsReview != null && `, ${counts.needsReview} need human review`}.
+                </span>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -92,6 +100,7 @@ export default async function ArticlesPage({ searchParams }) {
                   <TableHead>Country</TableHead>
                   <TableHead>Language</TableHead>
                   <TableHead>Published</TableHead>
+                  <TableHead>Analysis</TableHead>
                   <TableHead>Status</TableHead>
                 </TableRow>
               </TableHeader>
@@ -130,8 +139,31 @@ export default async function ArticlesPage({ searchParams }) {
                     <TableCell className="tabular-nums">
                       {article.publishedAt ? formatDate(article.publishedAt) : "—"}
                     </TableCell>
+                    <TableCell className="max-w-56 whitespace-normal text-xs">
+                      {article.processingStatus === "processed" && article.sriLankaRelevance ? (
+                        <div title={article.relevanceReason ?? undefined}>
+                          <div className="font-medium">{RELEVANCE_LABELS[article.sriLankaRelevance]}</div>
+                          {article.eventCategory && (
+                            <div className="text-muted-foreground">{article.eventCategory.replace(/_/g, " ")}</div>
+                          )}
+                        </div>
+                      ) : article.processingStatus === "failed" && article.processingError ? (
+                        <div className="text-destructive" title={article.processingError}>
+                          {article.processingError.slice(0, 80)}
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
                     <TableCell>
-                      <StatusBadge status={article.processingStatus} />
+                      <div className="flex flex-col items-start gap-1">
+                        <StatusBadge status={article.processingStatus} />
+                        {article.needsReview && (
+                          <Badge variant="outline" className="border-amber-500/40 text-amber-500">
+                            Needs review
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}

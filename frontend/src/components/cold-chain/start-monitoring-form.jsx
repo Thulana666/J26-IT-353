@@ -7,22 +7,19 @@ import { STORAGE_LABELS, formatDateTime } from "@/lib/cold-chain/format";
 
 const valueOf = (number) => (number === null || number === undefined ? "" : String(number));
 
-// Start monitoring an in-transit shipment: choose the shipment and a free
-// device, check the limits (pre-filled from the items' storage condition) and
-// the expected delivery time. The backend re-checks every value.
+// Create a cold-chain shipment from a dispatched order: choose the shipment,
+// check the limits (pre-filled from the items' storage condition) and the
+// expected delivery time. It becomes "ready for dispatch"; the driver, truck
+// and sensor are allocated on its page. The backend re-checks every value.
 //   shipments: GET /api/cold-chain/shipments/available
-//   devices:   GET /api/cold-chain/devices, only active devices without an active shipment
-export function StartMonitoringForm({ shipments, devices }) {
+export function StartMonitoringForm({ shipments }) {
   const [shipmentId, setShipmentId] = useState(shipments[0]?.shipmentId ?? "");
-  const [deviceId, setDeviceId] = useState("");
   const shipment = shipments.find((s) => s.shipmentId === shipmentId);
-  const device = devices.find((d) => d.id === deviceId);
-  const isSimulator = device?.deviceType === "simulator";
   const limits = shipment?.defaultLimits;
 
   return (
-    <ActionForm action={startMonitoringAction} submitLabel="Start monitoring" pendingLabel="Starting…" resetOnSuccess={false}>
-      <div className="grid gap-4 md:grid-cols-2">
+    <ActionForm action={startMonitoringAction} submitLabel="Create shipment" pendingLabel="Creating…" resetOnSuccess={false}>
+      <div className="grid gap-4">
         <SelectField
           id="shipmentId"
           label="Shipment in transit"
@@ -31,18 +28,6 @@ export function StartMonitoringForm({ shipments, devices }) {
           options={shipments.map((s) => ({
             value: s.shipmentId,
             label: `${s.shipmentNumber} · ${s.originName ?? "?"} → ${s.destinationName ?? "?"} · dispatched ${formatDateTime(s.dispatchedAt)}`,
-          }))}
-        />
-        <SelectField
-          id="deviceId"
-          label="Sensor device"
-          hint={isSimulator ? "A simulator sends test data, so this becomes a test shipment." : "Leave empty to assign a device later."}
-          value={deviceId}
-          onChange={(event) => setDeviceId(event.target.value)}
-          placeholder="No device yet"
-          options={devices.map((d) => ({
-            value: d.id,
-            label: `${d.deviceCode}${d.name ? ` · ${d.name}` : ""}${d.deviceType === "simulator" ? " (simulator, test data only)" : ""}`,
           }))}
         />
       </div>
@@ -87,15 +72,7 @@ export function StartMonitoringForm({ shipments, devices }) {
         <TextField id="readingIntervalSeconds" label="Reading interval (seconds)" type="number" min="5" max="3600" step="1" defaultValue="60" hint="How often the device sends a reading." />
         <Field id="isTest" label="Data">
           <label className="flex h-8 items-center gap-2 text-sm">
-            {/* A simulator always makes a test shipment; the checkbox then only shows it. */}
-            {isSimulator ? (
-              <>
-                <input key="simulator" id="isTest" type="checkbox" checked readOnly disabled />
-                <input type="hidden" name="isTest" value="true" />
-              </>
-            ) : (
-              <input key="choice" id="isTest" type="checkbox" name="isTest" value="true" />
-            )}
+            <input id="isTest" type="checkbox" name="isTest" value="true" />
             Test shipment (simulated data, excluded from research)
           </label>
         </Field>

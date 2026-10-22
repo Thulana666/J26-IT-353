@@ -4,6 +4,7 @@ import {
   CONNECTION,
   LIMIT_STATE,
   SHIPMENT_STATUS,
+  TRIP_STATUS,
   formatAge,
   formatDuration,
   formatHumidity,
@@ -41,7 +42,7 @@ const outsideLimits = (s) =>
   ].some((state) => state === "above" || state === "below");
 
 export default async function ColdChainPage() {
-  const [{ profile }, [data, error]] = await Promise.all([getViewer(), safe(coldChainApi("/shipments", { query: { limit: 100 } }))]);
+  const [{ profile }, [data, error]] = await Promise.all([getViewer(), safe(coldChainApi("/shipments", { query: { tripStatus: "ready_for_dispatch,allocated,in_transit", limit: 100 } }))]);
   // Admins and warehouse staff start monitoring and manage devices (the backend enforces it too).
   const canManage = profile?.status === "active" && ["admin", "warehouse_staff"].includes(profile.role);
   if (error) {
@@ -67,11 +68,14 @@ export default async function ColdChainPage() {
         {hasTestData && <TestDataBadge />}
         {canManage && (
           <>
-            <Button variant="outline" nativeButton={false} render={<Link href="/dashboard/cold-chain/devices" />}>
-              Devices
+            <Button variant="outline" nativeButton={false} render={<Link href="/dashboard/cold-chain/drivers" />}>
+              Drivers
+            </Button>
+            <Button variant="outline" nativeButton={false} render={<Link href="/dashboard/cold-chain/trucks" />}>
+              Trucks
             </Button>
             <Button nativeButton={false} render={<Link href="/dashboard/cold-chain/start" />}>
-              Start monitoring
+              Create shipment
             </Button>
           </>
         )}
@@ -88,7 +92,12 @@ export default async function ColdChainPage() {
       )}
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Monitored shipments" value={active.length} hint={`${shipments.length - active.length} ended · ${shipments.filter((s) => s.isTest).length} test`} icon={MapPinIcon} />
+        <StatCard
+          label="Live trips"
+          value={shipments.length}
+          hint={`${shipments.filter((s) => s.trip.status === "in_transit").length} in transit · ${shipments.filter((s) => s.trip.status !== "in_transit").length} awaiting start`}
+          icon={MapPinIcon}
+        />
         <StatCard label="Outside limits now" value={active.filter(outsideLimits).length} hint="newest temperature or humidity reading" icon={ActivityIcon} />
         <StatCard label="Open alerts" value={openAlerts} hint={`${highAlertShipments} shipment(s) with a high alert`} icon={BadgeAlertIcon} />
         <StatCard label="Connection issues" value={connectionIssues} hint="sensors delayed or offline" icon={RefreshCWIcon} />
@@ -96,15 +105,20 @@ export default async function ColdChainPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Shipments</CardTitle>
-          <CardDescription>Newest reading of each monitored shipment. Open a shipment for trends, location, alerts and risk.</CardDescription>
+          <CardTitle>Live shipments</CardTitle>
+          <CardDescription>
+            Ready for dispatch, allocated and in transit. Open a shipment to allocate, start, track or deliver it;{" "}
+            <Link href="/dashboard/cold-chain/history" className="font-medium underline-offset-4 hover:underline">
+              delivered ones are in History →
+            </Link>
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {shipments.length === 0 ? (
             <EmptyState title="No monitored shipments">
               {canManage ? (
                 <Link href="/dashboard/cold-chain/start" className="font-medium underline-offset-4 hover:underline">
-                  Start monitoring a shipment in transit →
+                  Create a shipment from a dispatched order →
                 </Link>
               ) : (
                 "An admin or warehouse staff member starts monitoring when a shipment is dispatched."
@@ -126,6 +140,7 @@ function ShipmentsTable({ shipments }) {
         <TableRow>
           <TableHead>Shipment</TableHead>
           <TableHead>Route</TableHead>
+          <TableHead>Trip</TableHead>
           <TableHead className="text-right">Temperature</TableHead>
           <TableHead className="text-right">Humidity</TableHead>
           <TableHead>Sensor</TableHead>
@@ -155,6 +170,11 @@ function ShipmentsTable({ shipments }) {
                   {s.origin?.name ?? "—"} → {s.destination?.name ?? "—"}
                 </div>
                 <div className="text-xs text-muted-foreground">{s.items.map((item) => item.medicineName).filter(Boolean).join(", ") || "No items"}</div>
+              </TableCell>
+              <TableCell>
+                <MapBadge map={TRIP_STATUS} value={s.trip.status} />
+                <div className="text-xs text-muted-foreground">{s.driver?.fullName ?? "No driver"}</div>
+                <div className="font-mono text-xs text-muted-foreground">{s.truck?.registrationNumber ?? "No truck"}</div>
               </TableCell>
               <TableCell className="text-right">
                 <div className="tabular-nums">{formatTemp(reading?.temperatureC)}</div>

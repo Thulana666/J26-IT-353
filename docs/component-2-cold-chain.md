@@ -1,63 +1,92 @@
 # Component 2 – IoT Cold-Chain Tracking & Logistics Risk Prediction
 
-> Status: database, backend API and dashboard are in place. The temporary
-> risk predictor and the CNN-LSTM service structure come next.
+> Status: the end-to-end workflow (dispatch → allocation → live tracking →
+> risk → alerts → delivery → history) works. Risk predictions come from a
+> **temporary rule-based prototype**, clearly labelled as such; the CNN-LSTM
+> model is prepared in `ai-service/cold_chain/` but **not trained yet**.
 
-## Architecture
+## Workflow
+
+```
+Warehouse → Orders: dispatch            (Component 3; hands the shipment over via POST /api/cold-chain/shipments,
+        │                                or Cold Chain → Create shipment)
+        ▼
+READY_FOR_DISPATCH ── allocate driver + truck (+ the truck's sensor) ──► ALLOCATED
+        ▼                                                                    │ start
+   (re-allocation possible until the start)                                  ▼
+DELIVERED ◄── driver marks delivered ── IN_TRANSIT ◄── live readings (ESP32 → POST /readings)
+   │              final readings recorded,           temperature, humidity, GPS, speed
+   │              driver + truck available            → observed alerts, predicted risk, predicted alerts
+   ▼
+History (summaries; sensor data kept). The pharmacy confirms receipt itself (Component 4).
+```
 
 ```
 SHT31 / NEO-6M / MPU6050 ──► ESP32 ──HTTPS──► Express  POST /api/cold-chain/readings
-                                               │  device key, validation, data-quality flags,
-                                               │  observed-limit alerts
+                                               │  device key, validation, quality flags,
+                                               │  observed alerts, risk predictor, predicted alerts
                                                ▼
-                                             Supabase PostgreSQL (service role)
+                                             Supabase PostgreSQL (service role) ──Realtime──► dashboard
                                                ▲
-Browser ──► Next.js server ──(user token)──► Express  /api/cold-chain/shipments, /alerts, /devices
+Browser ──► Next.js server ──(user token)──► Express  /api/cold-chain/shipments, /drivers, /trucks, /alerts, /devices
+                                               │
+                                               └──► ai-service POST /cold-chain/predict (CNN-LSTM; 501 until trained)
 ```
 
-- Cold-chain monitoring extends **Component 4's shipments** (warehouse →
-  pharmacy). The shipments table is not changed. A shipment is monitored when it
-  has a `cold_chain_shipments` row, which uses the shipment's own id. Origin
-  (warehouse), destination (pharmacy), delivery status, actual delivery time
-  (`received_at`) and the medicines and batches carried come from Component 4.
-- Devices never hold the Supabase secret key. Each device has its own key; only
-  its SHA-256 hash is stored.
-- Alerts in this step are **observed** alerts: a measured value is outside or
-  close to a configured limit. **Predicted** risks (trends, delays, route
-  anomalies) come from the risk predictor (next steps). Predictions are stored
-  with the model name/version and an `is_prototype` flag, so the temporary
-  rule-based predictor is never presented as the trained model.
+- Cold-chain tracking extends **Component 4's shipments** without changing
+  them: a tracked shipment has a `cold_chain_shipments` row with the
+  shipment's own id. Origin, destination, items, batches and the pharmacy's
+  receipt come from Components 3/4.
+- Devices never hold the Supabase secret key: each device has its own key,
+  stored only as a SHA-256 hash.
 
 | Where | What |
 |---|---|
-| `supabase/migrations/20261017000000_create_cold_chain_schema.sql` | tables, views, triggers, RLS, Realtime |
-| `backend/src/cold-chain/` | API: `routes/`, `validation.js`, `quality.js`, `alert-rules.js`, `monitoring.js`, `device-auth.js`, `store.js` |
-| `frontend/src/app/dashboard/cold-chain/` | **Cold Chain** pages: shipments overview, shipment detail (`[shipmentId]`), start monitoring (`start/`), devices (`devices/`), server actions |
-| `frontend/src/components/cold-chain/`, `frontend/src/lib/cold-chain/` | charts (safe band, GPS track), risk card, alerts, readings table, badges; API client and formatting |
-| `backend/test/cold-chain/` | `npm test`: unit tests (validation, data quality, alert rules), HTTP tests with a fake Supabase client (`api.test.js`), and database tests in PGlite (`database.test.mjs`: triggers, constraints, views, RLS) |
+| `supabase/migrations/20261017000000_create_cold_chain_schema.sql` | devices, monitored shipments, readings, alerts, predictions, views, RLS, Realtime |
+| `supabase/migrations/20261018000002_cold_chain_logistics.sql` | drivers, trucks, trip workflow functions, history summary view, backfill |
+| `backend/src/cold-chain/` | API (`routes/`), validation, data quality, observed alerts, `risk/` (prototype predictor, provider interface, predicted alerts, scheduler) |
+| `frontend/src/app/dashboard/cold-chain/` | **Cold Chain** pages: Shipments, Create shipment (`start/`), shipment page (`[shipmentId]`), Drivers, Trucks, History, Devices |
+| `frontend/src/components/cold-chain/`, `frontend/src/lib/cold-chain/` | trip panel, allocation and fleet forms, charts, map preview, risk card, alerts, readings table |
+| `ai-service/cold_chain/` | CNN-LSTM preparation: preprocessing, model definition, training script, `/cold-chain/predict` (501 until trained) |
+| `backend/test/cold-chain/`, `ai-service/tests/test_cold_chain.py` | unit, HTTP (fake Supabase) and PGlite database tests; preprocessing tests |
+| `backend/scripts/check-cold-chain-api.js` | live end-to-end check against Supabase |
+| `backend/scripts/simulate-cold-chain.js` | simulated readings for test trips |
 
 ## Database
 
 | Table | Purpose |
 |---|---|
-| `cold_chain_devices` | ESP32 loggers and the simulator; `key_hash`, `is_active`, `last_seen_at` |
-| `cold_chain_shipments` | monitoring settings per shipment (PK = `shipments.id`): device, temperature/humidity limits, expected delivery, reading interval, `is_test`, `monitoring_status` |
-| `cold_chain_readings` | readings: `recorded_at` (device) and `received_at` (server), temperature, humidity, GPS, speed, vibration, `source`, `quality_flags`; unique per shipment and time |
-| `cold_chain_alerts` | one active alert per condition (`dedupe_key`), `basis` observed/predicted, level, probability, first/last detection, occurrences |
-| `cold_chain_risk_predictions` | predictor output: level, probability, main risk type, explanation, factors, model name/version |
+| `cold_chain_devices` | ESP32 loggers and simulators; `key_hash`, `is_active`, `last_seen_at` |
+| `cold_chain_drivers` | name, phone, email, licence number and expiry, `status` available / assigned / on_trip / inactive |
+| `cold_chain_trucks` | registration, type, `is_refrigerated` with the range it holds, installed sensor (`device_id`), `status` available / assigned / in_use / inactive |
+| `cold_chain_shipments` | per shipment (PK = `shipments.id`): limits, expected delivery, `is_test`, **trip**: `trip_status`, driver, truck, device, allocated / started / delivered times, delivery note, final readings |
+| `cold_chain_readings` | `recorded_at` (device) and `received_at` (server), temperature, humidity, GPS, speed, vibration, `source`, `quality_flags`; unique per shipment and time |
+| `cold_chain_alerts` | one active alert per condition (`dedupe_key`); `basis` observed / predicted, level, probability, first/last detection, occurrences, acknowledgement |
+| `cold_chain_risk_predictions` | level, probability, main risk type, explanation, per-risk factors, model name/version, `is_prototype` |
 
-Views `cold_chain_latest_readings` and `cold_chain_latest_predictions` hold the newest row per shipment.
+Views: `cold_chain_latest_readings`, `cold_chain_latest_predictions`,
+`cold_chain_shipment_summaries` (history: readings, min/avg/max, readings
+outside the limits, alerts, highest predicted risk).
 
-- **Test data stays separate.** Simulator devices may only report for
-  `is_test` shipments; a database trigger enforces this too. Readings record
-  their `source` (`device` / `simulator`).
-- **RLS:** admins and warehouse staff read everything; pharmacy staff read
-  shipments to their pharmacy (same rule as `shipments`). Devices are not
-  readable from the browser. All writes go through the backend.
-- Default limits come from the strictest `medicines.storage_condition` in the
-  shipment (refrigerated 2–8 °C, cool 8–15 °C, ambient 15–30 °C, frozen −25 to
-  −15 °C; humidity defaults in `constants.js`). They are prototype defaults and
-  can be changed per shipment to match product labels.
+- **Workflow integrity.** Allocation, start and delivery are database
+  functions (`cold_chain_allocate_trip`, `cold_chain_start_trip`,
+  `cold_chain_deliver_trip`) that lock the trip, driver and truck rows and
+  update their statuses in one transaction; partial unique indexes make a
+  second live trip for a driver or truck impossible. Allocation refuses
+  inactive or unavailable drivers and trucks, expired licences, and
+  non-refrigerated trucks (or trucks whose range does not cover the limits)
+  for temperature-controlled shipments. A trip starts only with a sensor.
+- **Readings only while the trip runs** (a trigger refuses them before the
+  start; buffered readings recorded before delivery are still accepted).
+- **Test data stays separate**: simulator devices may only report for
+  `is_test` shipments (also enforced by a trigger); readings record their
+  `source`.
+- **RLS**: monitored shipments, readings, alerts and predictions as
+  `shipments` (admins and warehouse staff all, pharmacy staff their pharmacy);
+  drivers and trucks admins and warehouse staff only; devices and the workflow
+  functions backend only.
+- Default limits come from the strictest `medicines.storage_condition` of
+  the items (prototype defaults; set them from the product labels).
 
 ## Device API (ESP32)
 
@@ -65,104 +94,140 @@ Views `cold_chain_latest_readings` and `cold_chain_latest_predictions` hold the 
 POST /api/cold-chain/readings
 X-Device-Id:  ESP32-001
 X-Device-Key: ccd_...            (from device registration; keep it out of source control)
-Content-Type: application/json
 
 { "recordedAt": "2026-10-17T03:00:00Z", "temperatureC": 5.4, "humidityPct": 62.1,
   "latitude": 6.9271, "longitude": 79.8612, "speedKmh": 38.5, "vibrationG": 0.12 }
 ```
 
-Batch (e.g. readings buffered while offline), up to 300:
-`{ "shipmentNumber": "SH-000001", "readings": [ {...}, {...} ] }`
+Batch (readings buffered while offline), up to 300:
+`{ "shipmentNumber": "SH-000001", "readings": [ {...}, {...} ] }`.
 
-- `recordedAt`: ISO 8601 with a time zone, or Unix seconds (NTP/GPS time).
-  Required. Rejected when before 2020 (clock not set), more than 2 minutes in
-  the future, or outside the shipment's monitoring window.
-- Measurements must be JSON numbers, or `null` when not measured. Ranges:
-  temperature −60–85 °C, humidity 0–100 %, speed 0–250 km/h, vibration 0–16 g.
-  Latitude and longitude are sent together; `0, 0` is rejected (send `null`
-  without a GPS fix). Unknown fields are rejected.
-- Without `shipmentId` / `shipmentNumber`, the device's active assignment is used.
-- Each reading is validated separately. Valid ones are stored even if others
-  are rejected. A resent reading (same time) is reported in `duplicates` and
-  not stored twice.
-- **Retry rule for firmware:** drop readings from the buffer on any 2xx or 4xx
-  answer; keep and retry them only on 5xx or no answer.
+- `recordedAt` (ISO 8601 with time zone, or Unix seconds) is required;
+  refused before 2020 (clock not set), more than 2 min in the future, or
+  outside the trip (start → delivery).
+- Measurements are JSON numbers or `null`; out-of-range values, strings,
+  a lone latitude, `0, 0` and unknown fields are refused, never adjusted.
+- Without `shipmentId` / `shipmentNumber` the device's live trip is used.
+- Response `201 { accepted, duplicates, rejected: [{ index, errors }], alerts, risk }`;
+  `200` nothing new, `400` nothing valid, `401` wrong key, `403` deactivated
+  device, `409` no live trip / trip not started.
+- Firmware: drop readings from the buffer on any 2xx or 4xx; retry on 5xx or no answer.
+- Quality flags (values kept as sent): `delayed_upload`, `gps_jump`, `after_delivery`.
 
-Response: `201 { shipmentId, shipmentNumber, accepted, duplicates, rejected: [{ index, errors }], alerts: { opened, updated, resolved } }`
-(`200` if nothing new was stored, `400` if no reading was valid, `401` wrong key, `403` deactivated device, `409` device not assigned).
+## Dashboard API (user token)
 
-**Data-quality flags** (stored values are never changed):
-`delayed_upload` (received > 5 min or 3 intervals after recording),
-`gps_jump` (> 200 km/h implied between fixes at least 1 km apart),
-`after_delivery` (recorded after the pharmacy received the shipment).
-
-## Dashboard API (user token, roles as in Component 4)
+"Staff" = admins, warehouse staff, and pharmacy staff of the destination pharmacy.
+"Logistics" = admins and warehouse staff.
 
 | Method & path | Who | Purpose |
 |---|---|---|
-| `GET /api/cold-chain/shipments?status=&test=&limit=` | staff | monitored shipments, each with latest reading, connection, delivery, open alerts, latest prediction |
-| `GET /api/cold-chain/shipments/available` | admin, warehouse | in-transit shipments not yet monitored, with default limits |
-| `POST /api/cold-chain/shipments` | admin, warehouse | start monitoring `{ shipmentId, deviceId?, expectedDeliveryAt?, startedAt?, isTest?, tempMinC?, tempMaxC?, humidityMinPct?, humidityMaxPct?, readingIntervalSeconds? }` |
-| `GET /api/cold-chain/shipments/:id` | staff | one monitored shipment |
-| `PATCH /api/cold-chain/shipments/:id` | admin, warehouse | device, limits, expected delivery, interval; `{ monitoringStatus: "ended" }` |
-| `GET /api/cold-chain/shipments/:id/readings?from=&to=&limit=` | staff | readings, oldest first (default: newest 1000) |
-| `GET /api/cold-chain/shipments/:id/alerts?status=` | staff | alerts |
-| `GET /api/cold-chain/shipments/:id/risk` | staff | newest risk prediction, or `null` |
-| `POST /api/cold-chain/alerts/:id/acknowledge` | staff | acknowledge an open alert |
-| `GET /api/cold-chain/devices` | admin, warehouse | devices and their active shipment |
-| `POST /api/cold-chain/devices` | admin | register `{ deviceCode, name?, deviceType?: "esp32" \| "simulator", notes? }`; the key is returned once |
-| `PATCH /api/cold-chain/devices/:id` | admin | `{ name?, notes?, isActive? }` |
-| `POST /api/cold-chain/devices/:id/rotate-key` | admin | new key, returned once |
+| `GET /shipments?tripStatus=&status=&test=&limit=` | staff | tracked shipments with trip, driver, truck, latest reading, connection, delivery, alerts, latest prediction, summary |
+| `GET /shipments/available` | logistics | dispatched shipments not tracked yet |
+| `POST /shipments` | logistics | create (ready for dispatch) `{ shipmentId, expectedDeliveryAt?, isTest?, limits… }`; 409 "already monitored" if it exists (the warehouse handoff relies on this) |
+| `POST /shipments/:id/allocate` | logistics | `{ driverId, truckId, deviceId? }` |
+| `POST /shipments/:id/start` | logistics | start the trip |
+| `POST /shipments/:id/deliver` | logistics | `{ notes? }` mark delivered (on the driver's behalf) |
+| `GET /shipments/:id`, `/readings`, `/alerts`, `/risk` | staff | detail, readings, alerts, newest prediction |
+| `PATCH /shipments/:id` | logistics | limits, expected delivery, interval, device |
+| `GET/POST /drivers`, `PATCH /drivers/:id`, `PATCH /drivers/:id/status { active }` | logistics | drivers |
+| `GET/POST /trucks`, `PATCH /trucks/:id`, `PATCH /trucks/:id/status { active }` | logistics | trucks |
+| `POST /alerts/:id/acknowledge` | staff | acknowledge an alert |
+| `GET/POST /devices`, `PATCH /devices/:id`, `POST /devices/:id/rotate-key` | logistics (write: admin) | sensors; keys shown once |
 
-"Staff" = admin, warehouse staff, or pharmacy staff of the destination pharmacy.
+All paths are under `/api/cold-chain`. Business-rule refusals answer 409 with
+a readable message (e.g. "Driver Nimal Perera is not available (on trip)").
 
-**Connection status** (age of the newest reading): `online` ≤ 3 intervals,
-`delayed` ≤ 10 intervals, `offline` beyond that, `no_data`, `ended`.
+## Alerts and risk prediction
 
-## Observed alerts
+**Observed alerts** (measurements): temperature within 0.5 °C of a limit →
+medium, beyond it → high; humidity outside its range → medium. One alert per
+condition; it is updated while the condition lasts, only escalates, and
+resolves when the newest reading is back in range.
 
-One alert per condition (`temperature_excursion:above|below`,
-`humidity_deviation:above|below`):
+**Risk prediction** runs after every upload, when a trip starts, and every
+`COLD_CHAIN_RISK_INTERVAL_MINUTES` (default 5) for trips in transit, so a
+silent sensor or a passed delivery time is noticed without new readings.
+Output: `riskLevel` (low < 0.3 ≤ medium < 0.7 ≤ high), `riskProbability`,
+`riskType` (`temperature_excursion`, `humidity_deviation`, `delivery_delay`,
+`route_anomaly` = route/logistics risk, `combined`), `explanation`, per-risk
+`factors`, model name/version and `is_prototype`.
 
-- Temperature within 0.5 °C of a limit → **medium** ("approaching"); beyond
-  the limit → **high**. Humidity outside the configured range → **medium**.
-- While the condition lasts, the same alert is updated (last detection, peak
-  value, occurrences). It only escalates. An escalated alert that was
-  acknowledged is opened again.
-- It resolves when the newest reading is back inside the safe band. A later
-  breach opens a new alert, so each excursion is its own record.
-- The wording reports measurements ("Measured temperature reached 9.1 °C,
-  above the 8 °C limit … check the products' stability data"). It never states
-  that a product is spoiled.
+- **Current predictor: `prototype_rules` 0.1 (temporary, rule-based, not a
+  trained model)**: temperature/humidity trend towards a limit (least-squares
+  slope over 30 min), delivery delay (remaining distance at the recent average
+  speed vs. the expected time), route risk (silent sensor, long stop, GPS
+  jumps), combined `1 − Π(1 − p)`. Its scores are heuristics, not calibrated
+  probabilities, and are never reported as model results.
+- **Interface**: `backend/src/cold-chain/risk/provider.js`. With
+  `COLD_CHAIN_RISK_MODEL=trained` the backend sends every reading since the
+  trip started, the limits, the planned delivery time, the warehouse (origin)
+  and the pharmacy (destination) to the AI service (`AI_SERVICE_URL`, default
+  `http://localhost:8000`), which answers with the trained models'
+  `temperatureRisk`, `delayRisk` and their combination. They are stored in
+  `temperature_risk`, `delay_risk` and `details` (components, combination,
+  data cleaning). When the AI service has no trained model (501), cannot
+  estimate a risk yet (422, e.g. the trip just started) or is unreachable, the
+  prototype answers instead, still labelled as the prototype, with the reason
+  in `details.fallback`: a rule-based result is never shown as a trained one.
+- **Predicted alerts**: one per risk type, opened at 60 % (high from 80 %),
+  resolved below 40 %; combined risk from 70 %. Messages give the probability
+  and the predictor ("Predicted risk 82 % (prototype rule-based predictor)").
+  A predicted temperature/humidity alert is closed while a measured one is active.
+- Predictions are stored when the level changes, the probability moves ≥ 5
+  points, or 5 minutes passed (a time series for later evaluation).
 
-## Development: simulator and live checks
+## Trained models (not trained on real data yet)
 
-Both scripts need an **in-transit shipment to a SAMPLE pharmacy** (or
-`--shipment SH-xxxxxx`) and the backend running. They run from `backend/`.
+`ai-service/cold_chain/` holds the full pipeline; `cold_chain/models/README.md`
+lists the commands. In short:
 
-- `node --env-file=.env scripts/simulate-cold-chain.js --scenario excursion`
-  sends simulated history through the real device API.
-  - Scenarios: `normal`, `rising`, `excursion`, `humidity`, `gps-jump`.
-  - Options: `--minutes`, `--interval`, `--seed`, `--live` (keep sending in
-    real time), `--reset` (delete the shipment's test data first).
-  - It registers the `SIM-001` simulator device with a fresh key on every run
-    and monitors the shipment as a **test** shipment. Simulated data cannot
-    reach real shipments.
-- `node --env-file=.env scripts/check-cold-chain-api.js` runs live checks
-  against Supabase.
-  - The device API is checked over HTTP on the running backend.
-  - The dashboard routes run in-process as a stub admin, because a script
-    cannot sign in as a person.
-  - Everything it creates is deleted at the end.
+1. `backend/scripts/export-cold-chain-dataset.js` exports real trips and
+   readings (test shipments excluded by default, no personal data) with a
+   dataset version; the planned delivery time is the one in effect when the
+   trip started (audit log).
+2. `training/build_dataset.py`: cleaning (every change counted), 1-minute grid
+   features without look-ahead, labels (excursion of the shipment's own limits
+   within the horizon; delivery after the planned time) and a chronological,
+   trip-level train/validation/test split.
+3. Temperature excursion: baselines (logistic regression, random forest,
+   gradient boosting) and the CNN-LSTM, compared on validation
+   (`training/compare.py`). Delivery delay: baselines and tuned gradient
+   boosting, every trip weighted the same (`training/delay.py`).
+4. `training/install.py` installs the selected models; the AI service refuses
+   models trained on test/simulated data. `cold_chain/risk.py` combines the two
+   risks (`max` by default; configurable, documented as a design choice).
+
+Outputs of test or simulated data are labelled "PIPELINE CHECK ONLY". No
+model has been trained on real data and no results exist yet: real trips with
+sensor data are needed first.
+
+## Development and testing
+
+From `backend/`, with the backend running:
+
+- `node --env-file=.env scripts/check-cold-chain-api.js --shipment SH-xxxxxx [--reset] [--keep]`:
+  live end-to-end check on one dispatched shipment (as a test shipment, with
+  a temporary driver, truck and simulator): create → allocate → start →
+  readings → predicted and observed alerts → delivery → history. Deletes what
+  it created unless `--keep`; `--cleanup` removes kept data.
+- `node --env-file=.env scripts/simulate-cold-chain.js --shipment SH-xxxxxx --scenario rising [--live]`:
+  simulated readings for a **test trip in transit** whose sensor is a
+  simulator device (set it up in Cold Chain: create a test shipment, allocate
+  a truck with e.g. SIM-001, start). Scenarios: normal, rising, excursion,
+  humidity, gps-jump.
+- `node --env-file=.env scripts/export-cold-chain-dataset.js [--include-test]`:
+  training data export for the AI pipeline (see Trained models).
+- `npm test` (backend), `.venv/Scripts/python -m unittest discover tests` (ai-service).
 
 ## Setup
 
-1. Apply `supabase/migrations/20261017000000_create_cold_chain_schema.sql`
-   (after the pharmacy migrations).
-2. Run the backend (`cd backend && npm run dev`). No new environment variables.
-3. As an admin, register a device on **Cold Chain → Devices** (the key is
-   shown once; put it in the firmware). Then, as an admin or warehouse staff,
-   use **Cold Chain → Start monitoring** to assign the device to an
-   in-transit shipment, check its limits and set the expected delivery time.
-   The same is possible through the API (`POST /api/cold-chain/devices`,
-   `POST /api/cold-chain/shipments`).
+1. Apply the cold-chain migrations in order (after the pharmacy and
+   warehouse ones; `20261019000000_cold_chain_trained_risk.sql` before using
+   trained models), then `notify pgrst, 'reload schema';`.
+2. Backend env (optional): `COLD_CHAIN_RISK_INTERVAL_MINUTES` (default 5),
+   `COLD_CHAIN_RISK_MODEL` (`prototype` default, or `trained`), `AI_SERVICE_URL`.
+   The AI service needs `requirements-training.txt` installed to serve trained
+   models.
+3. In Cold Chain: register sensors (Devices, admin; key shown once), add
+   drivers and trucks (install a sensor in each truck), then create, allocate,
+   start and deliver shipments from their pages.

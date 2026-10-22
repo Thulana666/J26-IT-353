@@ -495,6 +495,23 @@ describe("returns", () => {
   });
 });
 
+describe("demand model runs", () => {
+  test("runs and forecasts can record the linear regression; unknown models are still refused", async () => {
+    const run = await one("insert into pharmacy_forecast_runs (pharmacy_id, engine, horizon_days) values ($1, 'linear_regression', 30) returning id", [COL]);
+    const medicine = (await one("select id from medicines where name = 'Paracetamol'")).id;
+    const insertForecast = (model, day) =>
+      db.query(
+        "insert into pharmacy_demand_forecasts (run_id, pharmacy_id, medicine_id, forecast_date, predicted_quantity, model_name) values ($1, $2, $3, current_date + $5::int, 5, $4)",
+        [run.id, COL, medicine, model, day]
+      );
+    await insertForecast("linear_regression", 0);
+    await insertForecast("moving_average", 1);
+    await assert.rejects(insertForecast("neural_net", 2), /check constraint/);
+    await assert.rejects(db.query("insert into pharmacy_forecast_runs (pharmacy_id, engine, horizon_days) values ($1, 'magic', 30)", [COL]), /check constraint/);
+    await db.query("delete from pharmacy_forecast_runs where id = $1", [run.id]);
+  });
+});
+
 describe("ledger and demand", () => {
   test("inventory (on hand, reserved, held) always equals the sum of its stock movements", async () => {
     const r = await one(`select count(*) filter (where i.quantity_on_hand <> coalesce(x.s, 0) or i.quantity_reserved <> coalesce(x.r, 0) or i.quantity_held <> coalesce(x.h, 0))::int bad

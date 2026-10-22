@@ -1,8 +1,10 @@
 // /api/pharmacy/orders - pharmacy orders to the warehouse.
 //
 // GET  /                      orders the user may see (?status=&scope=all&pharmacyId=)
+// GET  /warehouse-stock       pharmacy: packs it can order from its supplying warehouse
 // GET  /:id                   one order
-// POST /                      pharmacy: submit an order (items may carry a recommendationId)
+// POST /                      pharmacy: submit an order (items may carry a recommendationId);
+//                             refused when the warehouse does not have the quantity
 // POST /:id/cancel            pharmacy: cancel its own order while it is still submitted
 //
 // The warehouse application reads these orders from the shared tables and
@@ -14,6 +16,7 @@ const { HttpError, unwrap } = require("../errors");
 const { requirePharmacyStaff, requireAnyStaff, pharmacyScope, assertCanSee } = require("../auth");
 const { parse, z, id, int, text, requiredText } = require("../validation");
 const { toOrder } = require("../mappers");
+const { MIN_SHELF_DAYS, getWarehouseAvailability, warehouseShortages } = require("../warehouse-stock");
 const { ORDER_SELECT, scopeToVisible, parseList, single } = require("./common");
 
 const router = express.Router();
@@ -36,6 +39,15 @@ router.get("/", requireAnyStaff, async (req, res) => {
   const rows = unwrap(await query);
   const names = await userNames(rows.map((r) => r.created_by));
   res.json({ orders: rows.map((row) => toOrder({ ...row, shipment: single(row.shipment) }, names)) });
+});
+
+router.get("/warehouse-stock", requirePharmacyStaff, pharmacyScope, async (req, res) => {
+  const warehouseId = req.pharmacy.warehouse_id;
+  const [warehouse, packs] = await Promise.all([
+    warehouseId ? supabase.from("warehouses").select("id, name").eq("id", warehouseId).maybeSingle().then(unwrap) : null,
+    getWarehouseAvailability(warehouseId),
+  ]);
+  res.json({ warehouse, minShelfDays: MIN_SHELF_DAYS, stock: Object.fromEntries(packs), checkedAt: new Date().toISOString() });
 });
 
 router.get("/:id", requireAnyStaff, async (req, res) => {
@@ -62,6 +74,22 @@ const createBody = z.object({
 
 router.post("/", requirePharmacyStaff, pharmacyScope, async (req, res) => {
   const body = parse(createBody, req.body);
+  // Checked against the warehouse's stock now, not the quantities the page
+  // showed. Without a supplying warehouse the function refuses the order.
+  if (req.pharmacy.warehouse_id) {
+    const medicineIds = [...new Set(body.items.map((i) => i.medicineId))];
+    const [packs, medicines] = await Promise.all([
+      getWarehouseAvailability(req.pharmacy.warehouse_id, medicineIds),
+      supabase.from("medicines").select("id, name, strength, unit").in("id", medicineIds).then(unwrap),
+    ]);
+    const names = new Map(medicines.map((m) => [m.id, [m.name, m.strength].filter(Boolean).join(" ")]));
+    const shortages = warehouseShortages(body.items, packs, names);
+    if (shortages.length > 0) {
+      const unit = new Map(medicines.map((m) => [m.id, m.unit ?? "pack"]));
+      const lines = shortages.map((s) => `${s.name}: ${s.ordered} ${unit.get(s.medicineId)}(s) ordered, ${s.available === 0 ? "out of stock" : `${s.available} available`}`);
+      throw new HttpError(409, `Not enough stock at the warehouse. ${lines.join("; ")}.`, { shortages });
+    }
+  }
   const order = await rpc("pharmacy_create_order", {
     p_pharmacy_id: req.pharmacy.id,
     p_user_id: req.user.id,

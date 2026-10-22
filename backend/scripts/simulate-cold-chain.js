@@ -1,34 +1,31 @@
 // Development simulator for Component 2 (IoT cold-chain monitoring).
 //
 // Sends SIMULATED sensor readings through the real device API
-// (POST /api/cold-chain/readings), the same way an ESP32 logger does. The data
-// is marked as test data everywhere: the device is a 'simulator' device, the
-// shipment is monitored with is_test = true, and every reading is stored with
-// source 'simulator' (the database refuses simulated readings for real
-// shipments). Use it to develop and demonstrate the dashboard, never to
-// produce research results.
+// (POST /api/cold-chain/readings), the same way an ESP32 logger does, for a
+// TEST trip that is in transit. Simulated data never reaches real shipments:
+// the trip must be a test shipment (is_test) and its allocated sensor a
+// 'simulator' device; the database refuses simulated readings otherwise.
+// Use it to develop and demonstrate the dashboard, never for research results.
 //
-// Setup uses the backend's service-role key (backend/.env) to register the
-// simulator device (a new key on every run, kept only in this process) and to
-// start TEST monitoring of an in-transit shipment.
+// Set the trip up through the normal workflow first (Cold Chain): create a
+// test shipment, allocate a driver and a truck whose sensor is a simulator
+// device (e.g. SIM-001), and start it. The script then issues a new key for
+// that simulator device (kept only in this process) and sends the readings.
 //
 // Usage (from backend/, with the backend running):
 //   node --env-file=.env scripts/simulate-cold-chain.js [options]
-//     --shipment SH-000123   in-transit shipment (default: the newest SAMPLE pharmacy one)
+//     --shipment SH-000123   the test trip (default: the newest test trip in transit with a simulator sensor)
 //     --scenario NAME        normal | rising | excursion | humidity | gps-jump   (default: excursion)
-//     --minutes 120          simulated history to send, ending now
+//     --minutes 60           simulated history to send, ending now (never before the trip started)
 //     --interval 60          seconds between readings
 //     --live                 then keep sending one reading per interval (Ctrl+C to stop)
-//     --reset                first delete this shipment's TEST monitoring, readings and alerts
 //     --seed 1               random seed (same seed, same data)
 //   BACKEND_URL defaults to http://localhost:5000.
 
 const supabase = require("../src/config/supabase");
 const { generateDeviceKey, hashDeviceKey } = require("../src/cold-chain/device-auth");
-const { defaultLimits } = require("../src/cold-chain/monitoring");
 
 const BACKEND_URL = (process.env.BACKEND_URL || "http://localhost:5000").replace(/\/$/, "");
-const SIMULATOR_CODE = "SIM-001";
 const SCENARIOS = ["normal", "rising", "excursion", "humidity", "gps-jump"];
 // Readings per upload (the API accepts up to 300).
 const BATCH_SIZE = 100;
@@ -36,11 +33,11 @@ const MIN = 60_000;
 // Used when the warehouse or pharmacy has no coordinates (Colombo area).
 const DEFAULT_ROUTE = { from: { latitude: 6.9497, longitude: 79.922 }, to: { latitude: 6.9061, longitude: 79.8656 } };
 
-const SHIPMENT_SELECT =
-  "id, shipment_number, status, dispatched_at, pharmacy_id, " +
-  "pharmacy:pharmacies!inner(code, name, location:locations(latitude, longitude)), " +
-  "warehouse:warehouses(name, location:locations(latitude, longitude)), " +
-  "items:shipment_items(medicine:medicines(storage_condition))";
+const TRIP_SELECT =
+  "shipment_id, is_test, trip_status, trip_started_at, temp_min_c, temp_max_c, humidity_max_pct, reading_interval_seconds, " +
+  "device:cold_chain_devices(id, device_code, device_type, is_active), " +
+  "pharmacy:pharmacies(name, location:locations(latitude, longitude)), " +
+  "shipment:shipments!inner(shipment_number, warehouse:warehouses(name, location:locations(latitude, longitude)))";
 
 function must({ data, error }) {
   if (error) throw new Error(`${error.code ?? ""} ${error.message}`.trim());
@@ -48,7 +45,7 @@ function must({ data, error }) {
 }
 
 function parseArgs(argv) {
-  const args = { scenario: "excursion", minutes: 120, interval: 60, seed: 1, live: false, reset: false, shipment: null };
+  const args = { scenario: "excursion", minutes: 60, interval: 60, seed: 1, live: false, shipment: null };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     const value = () => {
@@ -61,7 +58,6 @@ function parseArgs(argv) {
     else if (flag === "--interval") args.interval = Number(value());
     else if (flag === "--seed") args.seed = Number(value());
     else if (flag === "--live") args.live = true;
-    else if (flag === "--reset") args.reset = true;
     else throw new Error(`Unknown option ${flag}`);
   }
   if (!SCENARIOS.includes(args.scenario)) throw new Error(`--scenario must be one of ${SCENARIOS.join(", ")}`);
@@ -70,113 +66,40 @@ function parseArgs(argv) {
   return args;
 }
 
-// An in-transit shipment: the one named, else the newest to a SAMPLE pharmacy.
-async function findShipment(shipmentNumber) {
-  let query = supabase.from("shipments").select(SHIPMENT_SELECT).eq("status", "in_transit");
-  query = shipmentNumber
-    ? query.eq("shipment_number", shipmentNumber)
-    : query.like("pharmacy.code", "SAMPLE-%").order("dispatched_at", { ascending: false });
-  const [shipment] = must(await query.limit(1));
-  if (!shipment) {
+// The test trip in transit to simulate, with its simulator sensor.
+async function findTrip(shipmentNumber) {
+  let query = supabase.from("cold_chain_shipments").select(TRIP_SELECT).eq("trip_status", "in_transit").eq("is_test", true);
+  if (shipmentNumber) query = query.eq("shipment.shipment_number", shipmentNumber);
+  const trips = must(await query.order("trip_started_at", { ascending: false }).limit(20));
+  const trip = trips.find((t) => t.device?.device_type === "simulator");
+  if (!trip) {
     throw new Error(
-      shipmentNumber
-        ? `${shipmentNumber} is not a shipment in transit.`
-        : "No in-transit shipment to a SAMPLE pharmacy. Dispatch a sample order first, or pass --shipment SH-xxxxxx."
+      `${shipmentNumber ?? "No test trip"} is not a test trip in transit with a simulator sensor. In Cold Chain: create a test ` +
+        "shipment, allocate a driver and a truck with a simulator device (e.g. SIM-001), and start the trip."
     );
   }
-  return shipment;
+  if (!trip.device.is_active) throw new Error(`Simulator ${trip.device.device_code} is deactivated`);
+  return trip;
 }
 
-function routeOf(shipment) {
+function routeOf(trip) {
   const point = (location) =>
     location?.latitude != null && location?.longitude != null
       ? { latitude: Number(location.latitude), longitude: Number(location.longitude) }
       : null;
-  const from = point(shipment.warehouse?.location);
-  const to = point(shipment.pharmacy?.location);
+  const from = point(trip.shipment?.warehouse?.location);
+  const to = point(trip.pharmacy?.location);
   return from && to ? { from, to } : DEFAULT_ROUTE;
 }
 
-// The simulator device with a fresh key (only this process knows it).
-async function prepareSimulatorDevice() {
+// A new key for the trip's simulator device; only this process knows it.
+async function issueSimulatorKey(device) {
+  if (device.device_type !== "simulator") throw new Error(`${device.device_code} is a real device; the simulator never uses its key`);
   const deviceKey = generateDeviceKey();
-  const existing = must(
-    await supabase.from("cold_chain_devices").select("id, device_type").eq("device_code", SIMULATOR_CODE).maybeSingle()
-  );
-  if (existing && existing.device_type !== "simulator") {
-    throw new Error(`${SIMULATOR_CODE} is registered as a real device; the simulator only uses simulator devices.`);
-  }
-  const values = { key_hash: hashDeviceKey(deviceKey), is_active: true };
-  const device = existing
-    ? must(await supabase.from("cold_chain_devices").update(values).eq("id", existing.id).select("id, device_code").single())
-    : must(
-        await supabase
-          .from("cold_chain_devices")
-          .insert({
-            ...values,
-            device_code: SIMULATOR_CODE,
-            device_type: "simulator",
-            name: "Development simulator",
-            notes: "Generates test data only (backend/scripts/simulate-cold-chain.js).",
-          })
-          .select("id, device_code")
-          .single()
-      );
-  return { ...device, deviceKey };
-}
-
-// TEST monitoring of the shipment, reported by the simulator device. Real
-// (non-test) monitoring is never touched.
-async function prepareTestMonitoring(shipment, device, { reset, minutes, interval }) {
-  let monitor = must(await supabase.from("cold_chain_shipments").select("*").eq("shipment_id", shipment.id).maybeSingle());
-  if (monitor && !monitor.is_test) {
-    throw new Error(`${shipment.shipment_number} has real (non-test) monitoring; the simulator does not touch it.`);
-  }
-  if (monitor && reset) {
-    must(await supabase.from("cold_chain_shipments").delete().eq("shipment_id", shipment.id).eq("is_test", true));
-    monitor = null;
-  }
-  // The simulator reports for one shipment at a time.
   must(
-    await supabase
-      .from("cold_chain_shipments")
-      .update({ device_id: null })
-      .eq("device_id", device.id)
-      .eq("monitoring_status", "active")
-      .neq("shipment_id", shipment.id)
+    await supabase.from("cold_chain_devices").update({ key_hash: hashDeviceKey(deviceKey) }).eq("id", device.id).eq("device_type", "simulator")
   );
-
-  if (monitor) {
-    return must(
-      await supabase
-        .from("cold_chain_shipments")
-        .update({ device_id: device.id, monitoring_status: "active", ended_at: null })
-        .eq("shipment_id", shipment.id)
-        .select("*")
-        .single()
-    );
-  }
-  const { mixed: _mixed, ...limits } = defaultLimits(shipment.items.map((item) => item.medicine?.storage_condition));
-  return must(
-    await supabase
-      .from("cold_chain_shipments")
-      .insert({
-        shipment_id: shipment.id,
-        pharmacy_id: shipment.pharmacy_id,
-        device_id: device.id,
-        storage_condition: limits.storageCondition,
-        temp_min_c: limits.tempMinC,
-        temp_max_c: limits.tempMaxC,
-        humidity_min_pct: limits.humidityMinPct,
-        humidity_max_pct: limits.humidityMaxPct,
-        expected_delivery_at: new Date(Date.now() + 2 * 60 * MIN).toISOString(),
-        reading_interval_seconds: interval,
-        is_test: true,
-        started_at: new Date(Date.now() - (minutes + 1) * MIN).toISOString(),
-      })
-      .select("*")
-      .single()
-  );
+  return { device_code: device.device_code, deviceKey };
 }
 
 // Small seeded PRNG (mulberry32), so a seed always gives the same data.
@@ -238,55 +161,60 @@ async function postReadings(device, body) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const shipment = await findShipment(args.shipment);
-  const device = await prepareSimulatorDevice();
-  const monitor = await prepareTestMonitoring(shipment, device, args);
-  const route = routeOf(shipment);
+  const trip = await findTrip(args.shipment);
+  const device = await issueSimulatorKey(trip.device);
+  const route = routeOf(trip);
   const rand = prng(args.seed);
-  console.log(`TEST data -> ${shipment.shipment_number} (${shipment.pharmacy.name}) via ${device.device_code}, scenario "${args.scenario}"`);
-  console.log(`Limits ${monitor.temp_min_c}-${monitor.temp_max_c} °C, humidity max ${monitor.humidity_max_pct ?? "none"} %RH; backend ${BACKEND_URL}`);
+  const number = trip.shipment.shipment_number;
+  console.log(`TEST data -> ${number} (${trip.pharmacy?.name ?? "?"}) via ${device.device_code}, scenario "${args.scenario}"`);
+  console.log(`Limits ${trip.temp_min_c}-${trip.temp_max_c} °C, humidity max ${trip.humidity_max_pct ?? "none"} %RH; backend ${BACKEND_URL}`);
 
   const now = Date.now();
   const step = args.interval * 1000;
-  // History ending now, never before monitoring started.
-  const first = Math.max(now - args.minutes * MIN, Date.parse(monitor.started_at) + 1000);
+  // History ending now, never before the trip started.
+  const first = Math.max(now - args.minutes * MIN, Date.parse(trip.trip_started_at) + 1000);
   const count = Math.max(1, Math.floor((now - first) / step) + 1);
   const jumpIndex = Math.floor(count * 0.6);
   const readings = Array.from({ length: count }, (_, index) => {
     const recordedAt = now - (count - 1 - index) * step;
     const p = count === 1 ? 1 : index / (count - 1);
-    return { recordedAt: new Date(recordedAt).toISOString(), ...simulate(args.scenario, p, { limits: monitor, route, rand, jumpIndex, index }) };
+    return { recordedAt: new Date(recordedAt).toISOString(), ...simulate(args.scenario, p, { limits: trip, route, rand, jumpIndex, index }) };
   });
 
   const totals = { accepted: 0, duplicates: 0, rejected: 0, opened: 0, updated: 0, resolved: 0 };
+  let risk = null;
   for (let i = 0; i < readings.length; i += BATCH_SIZE) {
-    const { status, body } = await postReadings(device, { shipmentNumber: shipment.shipment_number, readings: readings.slice(i, i + BATCH_SIZE) });
+    const { status, body } = await postReadings(device, { shipmentNumber: number, readings: readings.slice(i, i + BATCH_SIZE) });
     if (status >= 300 && status !== 400) throw new Error(`Backend answered HTTP ${status}: ${body?.error ?? "no JSON body"}`);
     totals.accepted += body.accepted ?? 0;
     totals.duplicates += body.duplicates?.length ?? 0;
     totals.rejected += (body.rejected ?? body.details?.rejected ?? []).length;
     for (const key of ["opened", "updated", "resolved"]) totals[key] += body.alerts?.[key] ?? 0;
+    risk = body.risk ?? risk;
   }
   console.log(
     `Sent ${readings.length} reading(s): ${totals.accepted} stored, ${totals.duplicates} duplicate(s), ${totals.rejected} rejected; ` +
-      `alerts ${totals.opened} opened, ${totals.updated} updated, ${totals.resolved} resolved.`
+      `observed alerts ${totals.opened} opened, ${totals.updated} updated, ${totals.resolved} resolved.`
   );
+  if (risk) {
+    console.log(`Predicted risk: ${risk.riskLevel} ${Math.round(risk.riskProbability * 100)}% ${risk.riskType ?? ""} (${risk.isPrototype ? "prototype" : "model"})`);
+  }
 
   const alerts = must(
     await supabase
       .from("cold_chain_alerts")
-      .select("risk_level, status, title")
-      .eq("shipment_id", shipment.id)
+      .select("risk_level, basis, status, title")
+      .eq("shipment_id", trip.shipment_id)
       .order("last_detected_at", { ascending: false })
-      .limit(5)
+      .limit(6)
   );
-  for (const alert of alerts) console.log(`  [${alert.status}] ${alert.risk_level.toUpperCase()} ${alert.title}`);
+  for (const alert of alerts) console.log(`  [${alert.status}] ${alert.risk_level.toUpperCase()} ${alert.basis}: ${alert.title}`);
 
   if (!args.live) return;
   console.log(`Live: one reading every ${args.interval} s (Ctrl+C to stop).`);
   for (let index = count; ; index++) {
     await new Promise((resolve) => setTimeout(resolve, step));
-    const reading = { recordedAt: new Date().toISOString(), ...simulate(args.scenario, 1, { limits: monitor, route, rand, jumpIndex: -1, index }) };
+    const reading = { recordedAt: new Date().toISOString(), ...simulate(args.scenario, 1, { limits: trip, route, rand, jumpIndex: -1, index }) };
     const { status, body } = await postReadings(device, reading);
     console.log(`${reading.recordedAt} ${reading.temperatureC} °C ${reading.humidityPct} %RH -> HTTP ${status}${body?.error ? ` ${body.error}` : ""}`);
   }
@@ -299,4 +227,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { findShipment, postReadings, routeOf, BACKEND_URL };
+module.exports = { simulate, prng, postReadings, routeOf, BACKEND_URL };

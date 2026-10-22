@@ -24,6 +24,18 @@ const FIELD_LABELS = {
   deviceType: "Device type",
   name: "Name",
   notes: "Notes",
+  driverId: "Driver",
+  truckId: "Truck",
+  fullName: "Full name",
+  phone: "Phone",
+  email: "Email",
+  licenceNumber: "Licence number",
+  licenceExpiry: "Licence expiry",
+  registrationNumber: "Registration number",
+  truckType: "Truck type",
+  isRefrigerated: "Refrigerated",
+  minTempC: "Minimum temperature",
+  maxTempC: "Maximum temperature",
 };
 
 function failure(error) {
@@ -138,6 +150,148 @@ export async function setDeviceActiveAction(_previous, formData) {
   if (!deviceId || !UUID_RE.test(deviceId)) return { ok: false, error: "Unknown device." };
   try {
     await coldChainApi(`/devices/${deviceId}`, { method: "PATCH", body: { isActive: formData.get("isActive") === "true" } });
+  } catch (error) {
+    return failure(error);
+  }
+  refresh();
+  return { ok: true };
+}
+
+// --- Trip workflow (admins and warehouse staff) ---------------------------------
+
+function tripPath(shipmentId) {
+  return `/dashboard/cold-chain/${shipmentId}`;
+}
+
+export async function allocateTripAction(_previous, formData) {
+  const shipmentId = text(formData, "shipmentId");
+  if (!shipmentId || !UUID_RE.test(shipmentId)) return { ok: false, error: "Unknown shipment." };
+  try {
+    await coldChainApi(`/shipments/${shipmentId}/allocate`, {
+      method: "POST",
+      body: { driverId: text(formData, "driverId") ?? "", truckId: text(formData, "truckId") ?? "", deviceId: text(formData, "deviceId") },
+    });
+  } catch (error) {
+    return failure(error);
+  }
+  refresh();
+  return { ok: true, message: "Driver and truck allocated." };
+}
+
+export async function startTripAction(_previous, formData) {
+  const shipmentId = text(formData, "shipmentId");
+  if (!shipmentId || !UUID_RE.test(shipmentId)) return { ok: false, error: "Unknown shipment." };
+  try {
+    await coldChainApi(`/shipments/${shipmentId}/start`, { method: "POST" });
+  } catch (error) {
+    return failure(error);
+  }
+  revalidatePath(tripPath(shipmentId));
+  refresh();
+  return { ok: true, message: "Trip started: the shipment is in transit." };
+}
+
+// --- Drivers and trucks (admins and warehouse staff) ----------------------------
+
+// Creates a driver, or updates one when the form carries an id.
+export async function saveDriverAction(_previous, formData) {
+  const driverId = text(formData, "driverId");
+  const body = {
+    fullName: text(formData, "fullName") ?? "",
+    phone: text(formData, "phone") ?? "",
+    email: nullable(formData, "email"),
+    licenceNumber: text(formData, "licenceNumber") ?? "",
+    licenceExpiry: text(formData, "licenceExpiry") ?? "",
+    notes: nullable(formData, "notes"),
+  };
+  try {
+    if (driverId) await coldChainApi(`/drivers/${driverId}`, { method: "PATCH", body });
+    else await coldChainApi("/drivers", { method: "POST", body });
+  } catch (error) {
+    return failure(error);
+  }
+  refresh();
+  return { ok: true, message: driverId ? "Driver updated." : `Driver ${body.fullName} added.` };
+}
+
+export async function setDriverStatusAction(_previous, formData) {
+  const driverId = text(formData, "driverId");
+  if (!driverId || !UUID_RE.test(driverId)) return { ok: false, error: "Unknown driver." };
+  try {
+    await coldChainApi(`/drivers/${driverId}/status`, { method: "PATCH", body: { active: formData.get("active") === "true" } });
+  } catch (error) {
+    return failure(error);
+  }
+  refresh();
+  return { ok: true };
+}
+
+// Creates a truck, or updates one when the form carries an id.
+export async function saveTruckAction(_previous, formData) {
+  const truckId = text(formData, "truckId");
+  const isRefrigerated = formData.get("isRefrigerated") === "true";
+  const body = {
+    registrationNumber: text(formData, "registrationNumber") ?? "",
+    truckType: text(formData, "truckType") ?? "",
+    isRefrigerated,
+    minTempC: isRefrigerated ? nullable(formData, "minTempC") : null,
+    maxTempC: isRefrigerated ? nullable(formData, "maxTempC") : null,
+    deviceId: nullable(formData, "deviceId"),
+    notes: nullable(formData, "notes"),
+  };
+  try {
+    if (truckId) await coldChainApi(`/trucks/${truckId}`, { method: "PATCH", body });
+    else await coldChainApi("/trucks", { method: "POST", body });
+  } catch (error) {
+    return failure(error);
+  }
+  refresh();
+  return { ok: true, message: truckId ? "Truck updated." : `Truck ${body.registrationNumber.toUpperCase()} added.` };
+}
+
+export async function setTruckStatusAction(_previous, formData) {
+  const truckId = text(formData, "truckId");
+  if (!truckId || !UUID_RE.test(truckId)) return { ok: false, error: "Unknown truck." };
+  try {
+    await coldChainApi(`/trucks/${truckId}/status`, { method: "PATCH", body: { active: formData.get("active") === "true" } });
+  } catch (error) {
+    return failure(error);
+  }
+  refresh();
+  return { ok: true };
+}
+
+// --- Driver accounts and issues (admins and warehouse staff) --------------------
+
+export async function linkDriverAccountAction(_previous, formData) {
+  const driverId = text(formData, "driverId");
+  if (!driverId || !UUID_RE.test(driverId)) return { ok: false, error: "Unknown driver." };
+  try {
+    await coldChainApi(`/drivers/${driverId}/account`, { method: "POST", body: { email: text(formData, "email") ?? "" } });
+  } catch (error) {
+    return failure(error);
+  }
+  refresh();
+  return { ok: true, message: "Account linked: the driver can sign in to the Driver Portal." };
+}
+
+export async function unlinkDriverAccountAction(_previous, formData) {
+  const driverId = text(formData, "driverId");
+  if (!driverId || !UUID_RE.test(driverId)) return { ok: false, error: "Unknown driver." };
+  try {
+    await coldChainApi(`/drivers/${driverId}/account`, { method: "DELETE" });
+  } catch (error) {
+    return failure(error);
+  }
+  refresh();
+  return { ok: true };
+}
+
+export async function setIssueStatusAction(_previous, formData) {
+  const issueId = text(formData, "issueId");
+  if (!issueId || !UUID_RE.test(issueId)) return { ok: false, error: "Unknown issue." };
+  try {
+    await coldChainApi(`/issues/${issueId}`, { method: "PATCH", body: { status: text(formData, "status") ?? "" } });
   } catch (error) {
     return failure(error);
   }

@@ -67,6 +67,7 @@ const monitor = (overrides = {}) => ({
   reading_interval_seconds: 60,
   is_test: false,
   monitoring_status: "active",
+  trip_status: "in_transit",
   started_at: iso(Date.now() - 24 * 60 * MIN),
   ended_at: null,
   shipment: { shipment_number: "SH-000001", received_at: null },
@@ -75,18 +76,29 @@ const monitor = (overrides = {}) => ({
 
 // A device-side world: the device, its assignments, readings already stored
 // (by recorded_at ISO), the newest stored reading and an optional alert failure.
-function deviceWorld({ device = DEVICE, monitors = [monitor()], stored = [], latest = null, alertsError = null } = {}) {
+function deviceWorld({ device = DEVICE, monitors = [monitor()], stored = [], latest = null, alertsError = null, trip = {}, history = [] } = {}) {
   log.length = 0;
   respond = (q) => {
     if (q.table === "cold_chain_devices" && q.op === "select") {
       return { data: filterValue(q, "eq", "device_code") === device.device_code ? device : null, error: null };
     }
     if (q.table === "cold_chain_devices" && q.op === "update") return { data: null, error: null };
+    if (q.table === "cold_chain_shipments" && q.single === "maybe") {
+      const [m] = monitors;
+      return {
+        data: m && { ...m, expected_delivery_at: null, trip_started_at: iso(Date.now() - 2 * MIN), pharmacy: { location: null }, ...trip },
+        error: null,
+      };
+    }
     if (q.table === "cold_chain_shipments") return { data: monitors, error: null };
+    if (q.table === "cold_chain_risk_predictions") return { data: null, error: null };
     if (q.table === "cold_chain_readings" && q.op === "upsert") {
       const inserted = q.payload.filter((row) => !stored.includes(row.recorded_at));
       // PostgREST answers with +00:00 offsets rather than Z.
       return { data: inserted.map((row, i) => ({ id: i + 1, recorded_at: row.recorded_at.replace("Z", "+00:00") })), error: null };
+    }
+    if (q.table === "cold_chain_readings" && q.op === "select" && filterValue(q, "gte", "recorded_at")) {
+      return { data: history, error: null };
     }
     if (q.table === "cold_chain_readings" && q.op === "select") {
       return { data: filterValue(q, "lt", "recorded_at") ? null : latest, error: null };
@@ -98,6 +110,82 @@ function deviceWorld({ device = DEVICE, monitors = [monitor()], stored = [], lat
     throw new Error(`unexpected query: ${q.op} ${q.table}`);
   };
 }
+
+describe("trained risk model (COLD_CHAIN_RISK_MODEL=trained)", () => {
+  const http = require("node:http");
+  const TRIP_START = Date.now() - 45 * MIN;
+  const TRAINED = {
+    riskLevel: "high", riskProbability: 0.82, riskType: "delivery_delay", temperatureRisk: 0.12, delayRisk: 0.82,
+    explanation: "Overall HIGH risk (max of the estimated risks).",
+    factors: { delivery_delay: { probability: 0.82, explanation: "Delivery: 82% estimated risk", details: {} } },
+    components: { delay: { available: true } }, combination: { method: "max" }, cleaning: { input: 3 },
+    horizonMinutes: 30, readingsUsed: 3, dataUntil: iso(Date.now()), modelName: "temperature:random_forest+delay:logistic_regression", modelVersion: "v1",
+  };
+  let ai;
+  let reply;
+  let received;
+  before(async () => {
+    ai = http.createServer((req, res) => {
+      let data = "";
+      req.on("data", (chunk) => (data += chunk));
+      req.on("end", () => {
+        received = JSON.parse(data);
+        res.writeHead(reply.status, { "content-type": "application/json" });
+        res.end(JSON.stringify(reply.body));
+      });
+    });
+    await new Promise((resolve) => ai.listen(0, "127.0.0.1", resolve));
+    process.env.AI_SERVICE_URL = `http://127.0.0.1:${ai.address().port}`;
+    process.env.COLD_CHAIN_RISK_MODEL = "trained";
+  });
+  after(() => {
+    delete process.env.COLD_CHAIN_RISK_MODEL;
+    delete process.env.AI_SERVICE_URL;
+    ai.close();
+  });
+
+  const world = () =>
+    deviceWorld({
+      trip: {
+        trip_started_at: iso(TRIP_START),
+        expected_delivery_at: iso(TRIP_START + 90 * MIN),
+        pharmacy: { location: { latitude: "7.290600", longitude: "80.633700" } },
+        shipment: { warehouse: { location: { latitude: "6.949700", longitude: "79.922000" } } },
+      },
+      history: [0, 20, 40].map((m) => ({ recorded_at: iso(TRIP_START + m * MIN), temperature_c: "5.00", humidity_pct: null, latitude: null, longitude: null, speed_kmh: "40.00", quality_flags: [] })),
+    });
+
+  test("the whole trip and the route go to the AI service; its risks are stored", async () => {
+    reply = { status: 200, body: TRAINED };
+    world();
+    const { status, body } = await postReadings({ recordedAt: iso(Date.now() - MIN), temperatureC: 5 });
+    assert.equal(status, 201);
+    assert.equal(body.risk.isPrototype, false);
+    const [history] = queries("cold_chain_readings", "select").filter((q) => filterValue(q, "gte", "recorded_at"));
+    assert.equal(filterValue(history, "gte", "recorded_at"), iso(TRIP_START), "readings since the trip started, not a recent window");
+    assert.equal(received.readings.length, 3);
+    assert.deepEqual(received.origin, { latitude: 6.9497, longitude: 79.922 });
+    assert.deepEqual(received.destination, { latitude: 7.2906, longitude: 80.6337 });
+    const [insert] = queries("cold_chain_risk_predictions", "insert");
+    assert.deepEqual(
+      [insert.payload.is_prototype, insert.payload.model_name, insert.payload.temperature_risk, insert.payload.delay_risk, insert.payload.horizon_minutes],
+      [false, TRAINED.modelName, 0.12, 0.82, 30]
+    );
+    assert.deepEqual(insert.payload.details, { components: TRAINED.components, combination: TRAINED.combination, cleaning: TRAINED.cleaning });
+  });
+
+  test("without a trained model the prototype answers, labelled, with the reason", async () => {
+    reply = { status: 501, body: { detail: "No trained cold-chain model is installed" } };
+    world();
+    const { status, body } = await postReadings({ recordedAt: iso(Date.now() - MIN), temperatureC: 5 });
+    assert.equal(status, 201);
+    assert.equal(body.risk.isPrototype, true);
+    const [insert] = queries("cold_chain_risk_predictions", "insert");
+    assert.deepEqual([insert.payload.is_prototype, insert.payload.model_name], [true, "prototype_rules"]);
+    assert.equal(insert.payload.details.fallback.reason, "no_trained_model");
+    assert.ok(!("temperature_risk" in insert.payload) && !("delay_risk" in insert.payload), "no trained-model risk is stored");
+  });
+});
 
 describe("device keys", () => {
   test("keys are random, prefixed and stored only as a SHA-256 hash", () => {
@@ -130,7 +218,12 @@ describe("POST /readings", () => {
     deviceWorld({ latest: { recorded_at: iso(now - MIN), temperature_c: 5, humidity_pct: 60 } });
     const { status, body } = await postReadings({ recordedAt: Math.floor((now - 10 * MIN) / 1000), temperatureC: 5.25, latitude: 6.9271, longitude: 79.8612 });
     assert.equal(status, 201);
-    assert.deepEqual(body, { shipmentId: SHIPMENT_ID, shipmentNumber: "SH-000001", accepted: 1, duplicates: [], rejected: [], alerts: { opened: 0, updated: 0, resolved: 0 } });
+    const { risk, ...rest } = body;
+    assert.deepEqual(rest, { shipmentId: SHIPMENT_ID, shipmentNumber: "SH-000001", accepted: 1, duplicates: [], rejected: [], alerts: { opened: 0, updated: 0, resolved: 0 } });
+    // The temporary predictor ran on the new readings and says so.
+    assert.equal(risk.isPrototype, true);
+    assert.equal(risk.riskLevel, "low");
+    assert.equal(queries("cold_chain_risk_predictions", "insert")[0].payload.is_prototype, true);
 
     const [upsert] = queries("cold_chain_readings", "upsert");
     assert.deepEqual(upsert.options, { onConflict: "shipment_id,recorded_at", ignoreDuplicates: true });
@@ -172,7 +265,7 @@ describe("POST /readings", () => {
 
     // 9.3 °C is above the 8 °C limit: one observed alert, still active (newest reading 9.0 °C).
     assert.deepEqual(body.alerts, { opened: 1, updated: 0, resolved: 0 });
-    const [alert] = queries("cold_chain_alerts", "insert").map((q) => q.payload);
+    const [alert] = queries("cold_chain_alerts", "insert").map((q) => q.payload).filter((a) => a.basis === "observed");
     assert.equal(alert.shipment_id, SHIPMENT_ID);
     assert.equal(alert.basis, "observed");
     assert.equal(alert.dedupe_key, "temperature_excursion:above");
@@ -216,6 +309,15 @@ describe("POST /readings", () => {
     assert.deepEqual([none.status, none.body.error], [409, "This device is not assigned to an active shipment"]);
     const other = await postReadings({ ...reading, shipmentId: SHIPMENT_ID });
     assert.deepEqual([other.status, other.body.error], [409, "This device is not assigned to that shipment"]);
+  });
+
+  test("readings for a trip that is not in transit yet are refused (409)", async () => {
+    for (const tripStatus of ["ready_for_dispatch", "allocated"]) {
+      deviceWorld({ monitors: [monitor({ trip_status: tripStatus })] });
+      const { status, body } = await postReadings({ recordedAt: iso(Date.now()), temperatureC: 5 });
+      assert.deepEqual([status, body.error], [409, "The trip of shipment SH-000001 has not started yet"]);
+      assert.equal(queries("cold_chain_readings", "upsert").length, 0);
+    }
   });
 
   test("simulated data only reaches test shipments and is stored as 'simulator'", async () => {
@@ -288,6 +390,7 @@ describe("user routes", () => {
         return { data: [{ shipment_id: SHIPMENT_ID, id: 7, recorded_at: iso(Date.now() - 30_000), received_at: iso(Date.now()), temperature_c: "7.80", humidity_pct: "61.00", latitude: null, longitude: null, speed_kmh: null, vibration_g: null, source: "device", quality_flags: [] }], error: null };
       }
       if (q.table === "cold_chain_latest_predictions") return { data: [], error: null };
+      if (q.table === "cold_chain_shipment_summaries") return { data: [], error: null };
       if (q.table === "cold_chain_alerts") {
         return { data: [{ shipment_id: SHIPMENT_ID, risk_level: "medium" }, { shipment_id: SHIPMENT_ID, risk_level: "high" }], error: null };
       }

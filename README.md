@@ -82,14 +82,72 @@ others; a source without its key is reported as skipped. Set
 asks for at most one request per hour, and ReliefWeb's robots.txt disallows
 automated RSS access (hence its API is used).
 
+### NLP analysis of collected articles
+
+Pending articles are sent by the backend to the private AI service
+(`POST /event-intel/classify`: frozen rules + DistilRoBERTa + hybrid). The
+result is stored on the article: `analysis`, `event_category`,
+`sri_lanka_relevance` (direct / indirect / none / uncertain),
+`relevance_reason` and `needs_review`. Relevant events are grouped into
+NLP-generated `events` with their `event_locations` (code:
+`backend/src/event-intel/`).
+
+1. Run `supabase/migrations/20261021000000_add_article_analysis_fields.sql`
+   (additive). The processor refuses to start without it.
+2. Start the AI service with the deployed checkpoint, for example
+   `EVENT_INTEL_MODEL_DIR=<run>/checkpoint_category`. Without a loaded model,
+   runs stop rather than store rules-only results.
+3. Set `AI_SERVICE_URL` in `backend/.env` if the service is not on
+   `http://localhost:8000`.
+4. Trigger processing:
+   - **Analyse pending** on the Articles page (25 articles per click);
+   - **Refresh**, which also analyses up to 25 articles after collecting;
+   - `cd backend && npm run process:articles -- 200`.
+
+**Safety:**
+- Each article is claimed atomically and retried at most 3 times, at least
+  5 minutes apart.
+- An unreachable service or a missing model stops the run without using up an
+  attempt.
+- Events are de-duplicated by `events.dedupe_key`: category + disease or place
+  + ISO week.
+- Non-English or empty articles are recorded as `uncertain` and flagged for
+  review without a model call.
+- Severity is not rated, and indirect links are channels to check, not
+  confirmed impacts.
+
+### Run AI services and the schedule
+
+**Run AI services** (Recent News page, admins only) starts one background job
+on the backend: collect new articles, then analyse pending ones in batches of
+25, up to 500 per run. The button polls `GET /api/event-intel/status` and
+shows collected / analysed / flagged / failed / still-pending counts. Both
+`POST /api/event-intel/run` and the status endpoint use `INGESTION_API_KEY`
+and are called server-to-server only.
+
+Refresh, Analyse pending, Run AI services and the schedule share one lock, so
+runs never overlap; a second click answers 409. A run that stops (AI service
+down, no model loaded) leaves articles pending for the next run.
+
+**Schedule (optional):** set `EVENT_INTEL_PIPELINE_INTERVAL_MINUTES=60` in
+`backend/.env`. The backend then runs the same job every 60 minutes; 0 or
+unset means off. It only runs while the backend process (and the AI service)
+are running, and job history is kept in memory (it resets on restart). The
+Recent News page reads "Last collected / Last analysed" from the database.
+
 ## IoT cold-chain tracking & logistics risk (Component 2)
 
-Sensor readings from ESP32 loggers (temperature, humidity, GPS, speed,
-vibration) for shipments in transit, with data-quality checks and alerts when
-measurements cross configured limits. Builds on Component 4's shipments. Apply
-`supabase/migrations/20261017000000_create_cold_chain_schema.sql` after the
-pharmacy migrations and run the backend. Device API, dashboard API, alert rules
-and setup: [docs/component-2-cold-chain.md](docs/component-2-cold-chain.md).
+Trips for dispatched shipments: drivers and refrigerated trucks, allocation,
+live sensor readings from ESP32 loggers (temperature, humidity, GPS, speed),
+alerts, predicted risk (a temporary, labelled rule-based prototype until the
+models in `ai-service/cold_chain/` are trained on real trips and installed),
+delivery and history, under **Cold Chain** in the sidebar. Apply
+`supabase/migrations/20261017000000_create_cold_chain_schema.sql`,
+`20261018000002_cold_chain_logistics.sql`,
+`20261018000003_cold_chain_driver_portal.sql` and
+`20261019000000_cold_chain_trained_risk.sql` after the pharmacy and warehouse
+migrations, and run the backend. Workflow, device API, dashboard API, risk
+prediction and testing: [docs/component-2-cold-chain.md](docs/component-2-cold-chain.md).
 
 ## Warehouse FEFO & QR (Component 3)
 
@@ -104,12 +162,15 @@ FEFO/QR/allocation logic and setup: [docs/component-3-warehouse.md](docs/compone
 Batch-level pharmacy inventory, receiving (Confirm Receipt for matching
 deliveries; scan only disputed items to report discrepancies), POS billing
 (FEFO), purchase orders and returns shared with the warehouse application, and
-lightweight analytics: burn rate, stock cover, moving-average demand and
-rule-based reorder quantities (Q*), under **Pharmacy** in the sidebar. Apply
+lightweight analytics: burn rate, stock cover, a linear-regression demand
+forecast (trained with scikit-learn in the `ai-service`) compared against a
+moving-average baseline, and rule-based reorder
+quantities (Q*), under **Pharmacy** in the sidebar. Apply
 `supabase/migrations/20261010000000_create_pharmacy_schema.sql`,
 `20261010000001_create_pharmacy_functions.sql`,
-`20261012000000_update_pharmacy_receiving.sql` and
-`20261016000000_pharmacy_inventory_holds.sql` in order, optionally run
+`20261012000000_update_pharmacy_receiving.sql`,
+`20261016000000_pharmacy_inventory_holds.sql` and
+`20261020000000_pharmacy_linear_regression_model.sql` in order, optionally run
 `supabase/seed/sample_pharmacy.sql` (SAMPLE pharmacies with synthetic history),
 and run the backend. Roles, workflows, formulas, the warehouse integration
 contract and setup: [docs/component-4-pharmacy.md](docs/component-4-pharmacy.md).

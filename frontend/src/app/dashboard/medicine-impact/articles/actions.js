@@ -44,5 +44,46 @@ export async function refreshArticles() {
     ok: true,
     inserted: body.inserted ?? 0,
     results: (body.results ?? []).map(({ source, status, inserted, error }) => ({ source, status, inserted, error })),
+    analysis: summarizeAnalysis(body.analysis),
   };
+}
+
+const summarizeAnalysis = (a) =>
+  a && { processed: a.processed ?? 0, failed: a.failed ?? 0, needsReview: a.needsReview ?? 0, stopped: a.stopped ?? null, error: a.error ?? null };
+
+// Runs NLP analysis of pending articles on the backend (which calls the private
+// AI service). Admins only; bounded to one batch per click.
+export async function analyseArticles() {
+  const { profile } = await requireUser();
+  if (profile?.role !== "admin" || profile?.status !== "active") {
+    return { ok: false, error: "Only admins can analyse articles." };
+  }
+
+  const backendUrl = process.env.BACKEND_URL?.replace(/\/$/, "");
+  const key = process.env.INGESTION_API_KEY;
+  if (!backendUrl || !key) {
+    return { ok: false, error: "BACKEND_URL and INGESTION_API_KEY must be set in frontend/.env.local." };
+  }
+
+  let response;
+  try {
+    response = await fetch(`${backendUrl}/api/event-intel/process`, {
+      method: "POST",
+      headers: { "x-ingestion-key": key, "content-type": "application/json" },
+      body: JSON.stringify({ limit: 25 }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(5 * 60 * 1000),
+    });
+  } catch {
+    return { ok: false, error: `Could not reach the backend at ${backendUrl}.` };
+  }
+
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    return { ok: false, error: body.error || `The backend returned HTTP ${response.status}.` };
+  }
+
+  revalidatePath("/dashboard/medicine-impact/articles");
+  revalidatePath("/dashboard/medicine-impact/events");
+  return { ok: true, analysis: summarizeAnalysis(body) };
 }

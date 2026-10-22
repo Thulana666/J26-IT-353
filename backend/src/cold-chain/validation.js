@@ -3,9 +3,9 @@
 //   400 { error: "Invalid request", details: { fields: { path: message } } }
 // Written to work with both Zod 3 and Zod 4.
 
-const { z, parse, id, int, num, text, bool, optional, nullable } = require("../pharmacy/validation");
+const { z, parse, id, int, num, text, bool, optional, nullable, isoDate } = require("../pharmacy/validation");
 const { HttpError } = require("./errors");
-const { SENSOR_RANGES, INGEST } = require("./constants");
+const { SENSOR_RANGES, INGEST, TRIP_STATUSES, TRUCK_TYPES, ISSUE_TYPES, ISSUE_STATUSES } = require("./constants");
 
 // ISO 8601 date-time with an explicit time zone, e.g. 2026-10-17T08:30:00Z or +05:30.
 const ISO_DATETIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})$/i;
@@ -163,8 +163,64 @@ const deviceUpdate = z.object({
   isActive: bool.optional(),
 });
 
+// ---------------------------------------------------------------------------
+// Drivers, trucks and the trip workflow
+// ---------------------------------------------------------------------------
+
+const PHONE_RE = /^\+?[0-9][0-9 ()-]{6,19}$/;
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+const requiredString = (min, max) =>
+  z.string().trim().min(min, `must be at least ${min} characters`).max(max, `must be at most ${max} characters`);
+
+const driverFields = {
+  fullName: requiredString(2, 120),
+  phone: z.string().trim().regex(PHONE_RE, "must be a phone number, e.g. +94 77 123 4567"),
+  email: nullable(z.string().trim().regex(EMAIL_RE, "must be an email address").max(120)),
+  licenceNumber: requiredString(3, 40),
+  licenceExpiry: isoDate,
+  notes: nullable(z.string().trim().max(500)),
+};
+const driverCreate = z.object(driverFields);
+const driverUpdate = z.object(Object.fromEntries(Object.entries(driverFields).map(([key, schema]) => [key, schema.optional()])));
+
+const temperatureOrNull = nullable(num(-60, 85));
+const truckFields = {
+  registrationNumber: requiredString(2, 20).transform((value) => value.toUpperCase()),
+  truckType: z.enum(TRUCK_TYPES),
+  isRefrigerated: bool,
+  minTempC: temperatureOrNull,
+  maxTempC: temperatureOrNull,
+  // The sensor device installed in the truck; null removes it.
+  deviceId: nullable(id),
+  notes: nullable(z.string().trim().max(500)),
+};
+const truckCreate = z.object(truckFields);
+const truckUpdate = z.object(Object.fromEntries(Object.entries(truckFields).map(([key, schema]) => [key, schema.optional()])));
+
+// Activate / deactivate a driver or truck.
+const statusBody = z.object({ active: bool });
+
+const allocateBody = z.object({ driverId: id, truckId: id, deviceId: optional(id) });
+const deliverBody = z.object({ notes: text(1000) });
+
+// Link a driver record to the driver's own (existing) account.
+const accountBody = z.object({ email: z.string().trim().toLowerCase().regex(EMAIL_RE, "must be an email address").max(254) });
+
+const issueBody = z.object({
+  issueType: z.enum(ISSUE_TYPES),
+  description: z.string().trim().min(3, "must be at least 3 characters").max(1000, "must be at most 1000 characters"),
+});
+const issueUpdate = z.object({ status: z.enum(ISSUE_STATUSES), resolutionNotes: text(1000) });
+
 const listQuery = z.object({
   status: z.enum(["active", "ended"]).optional(),
+  // Comma-separated trip statuses, e.g. "allocated,in_transit".
+  tripStatus: z
+    .string()
+    .max(80)
+    .refine((value) => value.split(",").every((s) => TRIP_STATUSES.includes(s)), `must be one or more of ${TRIP_STATUSES.join(", ")}`)
+    .optional(),
   test: bool.optional(),
   limit: int(1, 200).optional(),
 });
@@ -190,6 +246,16 @@ module.exports = {
   monitorUpdate,
   deviceCreate,
   deviceUpdate,
+  driverCreate,
+  driverUpdate,
+  truckCreate,
+  truckUpdate,
+  statusBody,
+  allocateBody,
+  deliverBody,
+  accountBody,
+  issueBody,
+  issueUpdate,
   listQuery,
   readingsQuery,
   alertsQuery,

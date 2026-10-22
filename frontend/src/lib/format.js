@@ -42,3 +42,11 @@ export function formatNumber(value) {
 export function formatPercent(value) {
   return `${value > 0 ? "+" : ""}${value}%`;
 }
+
+// Sri Lanka relevance of an analysed article or event (NLP pipeline).
+export const RELEVANCE_LABELS = {
+  direct: "Sri Lanka (direct)",
+  indirect: "Possible link (indirect)",
+  none: "No Sri Lanka link",
+  uncertain: "Uncertain",
+};

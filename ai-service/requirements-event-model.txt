@@ -1,0 +1,9 @@
+# Serving the fine-tuned DistilRoBERTa event classifier (Component 1). Not needed by the
+# warehouse or cold-chain routes, or for rules-only event classification.
+# Versions tested on CPU (Python 3.14): torch 2.14.1+cpu, transformers 5.20.1, tokenizers 0.23.3.
+# CPU-only PyTorch on Linux: pip install torch --index-url https://download.pytorch.org/whl/cpu
+# (the PyPI Windows wheel is already CPU-only).
+-r requirements.txt
+torch==2.14.1
+transformers==5.20.1
+tokenizers==0.23.3
