@@ -33,6 +33,12 @@ export const dashboardNav = [
         description: "Local and global events that may affect medicine demand.",
       },
       {
+        title: "Recent News",
+        href: "/dashboard/medicine-impact/news",
+        icon: "badge-alert",
+        description: "Analysed news that may affect Sri Lankan pharmaceutical supply or demand, newest first.",
+      },
+      {
         title: "Articles / Sources",
         href: "/dashboard/medicine-impact/articles",
         icon: "file-text",

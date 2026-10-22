@@ -82,6 +82,59 @@ others; a source without its key is reported as skipped. Set
 asks for at most one request per hour, and ReliefWeb's robots.txt disallows
 automated RSS access (hence its API is used).
 
+### NLP analysis of collected articles
+
+Pending articles are sent by the backend to the private AI service
+(`POST /event-intel/classify`: frozen rules + DistilRoBERTa + hybrid). The
+result is stored on the article: `analysis`, `event_category`,
+`sri_lanka_relevance` (direct / indirect / none / uncertain),
+`relevance_reason` and `needs_review`. Relevant events are grouped into
+NLP-generated `events` with their `event_locations` (code:
+`backend/src/event-intel/`).
+
+1. Run `supabase/migrations/20261021000000_add_article_analysis_fields.sql`
+   (additive). The processor refuses to start without it.
+2. Start the AI service with the deployed checkpoint, for example
+   `EVENT_INTEL_MODEL_DIR=<run>/checkpoint_category`. Without a loaded model,
+   runs stop rather than store rules-only results.
+3. Set `AI_SERVICE_URL` in `backend/.env` if the service is not on
+   `http://localhost:8000`.
+4. Trigger processing:
+   - **Analyse pending** on the Articles page (25 articles per click);
+   - **Refresh**, which also analyses up to 25 articles after collecting;
+   - `cd backend && npm run process:articles -- 200`.
+
+**Safety:**
+- Each article is claimed atomically and retried at most 3 times, at least
+  5 minutes apart.
+- An unreachable service or a missing model stops the run without using up an
+  attempt.
+- Events are de-duplicated by `events.dedupe_key`: category + disease or place
+  + ISO week.
+- Non-English or empty articles are recorded as `uncertain` and flagged for
+  review without a model call.
+- Severity is not rated, and indirect links are channels to check, not
+  confirmed impacts.
+
+### Run AI services and the schedule
+
+**Run AI services** (Recent News page, admins only) starts one background job
+on the backend: collect new articles, then analyse pending ones in batches of
+25, up to 500 per run. The button polls `GET /api/event-intel/status` and
+shows collected / analysed / flagged / failed / still-pending counts. Both
+`POST /api/event-intel/run` and the status endpoint use `INGESTION_API_KEY`
+and are called server-to-server only.
+
+Refresh, Analyse pending, Run AI services and the schedule share one lock, so
+runs never overlap; a second click answers 409. A run that stops (AI service
+down, no model loaded) leaves articles pending for the next run.
+
+**Schedule (optional):** set `EVENT_INTEL_PIPELINE_INTERVAL_MINUTES=60` in
+`backend/.env`. The backend then runs the same job every 60 minutes; 0 or
+unset means off. It only runs while the backend process (and the AI service)
+are running, and job history is kept in memory (it resets on restart). The
+Recent News page reads "Last collected / Last analysed" from the database.
+
 ## IoT cold-chain tracking & logistics risk (Component 2)
 
 Trips for dispatched shipments: drivers and refrigerated trucks, allocation,

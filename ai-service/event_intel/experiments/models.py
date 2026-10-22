@@ -26,6 +26,9 @@ TOKEN = re.compile(r"[a-z][a-z0-9'-]+")
 TRANSFORMER_ID = "distilbert/distilroberta-base"
 TRANSFORMER_REVISION = "fb53ab8802853c8e4fbdbcd0529f21fc6f459b2b"  # pinned; verified offline 2026-10-19
 MIN_FREE_RAM_GB = 3.0
+# Device: "cpu" (default; laptop runs and the production API are unchanged), "cuda" (fail if no GPU)
+# or "auto" (GPU when available). GPU runs are not bit-identical to CPU runs.
+DEVICE_ENV = "EVENT_INTEL_DEVICE"
 ABORT_FREE_RAM_GB = 1.5  # stop between epochs if free RAM falls this low
 
 # Conservative defaults for a 15 GB laptop on CPU.
@@ -85,6 +88,13 @@ class NaiveBayes:
 
     def config(self) -> dict:
         return {"model": self.name, "alpha": self.alpha, "vocabulary_size": len(self.vocab), "tokenizer": "regex [a-z][a-z0-9'-]+ lowercase, + bigrams"}
+
+
+def requested_device() -> str:
+    value = os.environ.get(DEVICE_ENV, "cpu").strip().lower() or "cpu"
+    if value not in ("cpu", "cuda", "auto"):
+        raise ValueError(f"{DEVICE_ENV} must be cpu, cuda or auto, not {value!r}")
+    return value
 
 
 def set_seed(seed: int) -> None:
@@ -219,11 +229,23 @@ class Transformer:
 
     def _setup(self):
         os.environ["HF_HUB_OFFLINE"] = "1"           # never reach the network
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""      # never touch the GPU
+        requested = requested_device()
+        if requested == "cpu":
+            os.environ["CUDA_VISIBLE_DEVICES"] = ""  # default: never touch the GPU (laptop + production API)
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         import torch
         torch.set_num_threads(self.settings["threads"])
+        if requested == "cpu":
+            self.device = "cpu"
+        elif torch.cuda.is_available():
+            self.device = "cuda"
+        elif requested == "auto":
+            self.device = "cpu"
+        else:
+            raise MissingDependency(f"{DEVICE_ENV}=cuda but no CUDA GPU is available")
         set_seed(self.seed)
+        if self.device == "cuda":
+            torch.cuda.manual_seed_all(self.seed)
         return torch
 
     def load(self, num_labels: int):
@@ -232,7 +254,7 @@ class Transformer:
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(TRANSFORMER_ID, **load_kwargs())
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            TRANSFORMER_ID, num_labels=num_labels, **load_kwargs()).to("cpu")
+            TRANSFORMER_ID, num_labels=num_labels, **load_kwargs()).to(self.device)
         return torch
 
     def fit(self, texts, labels, val_texts=None, val_labels=None, score_fn=None):  # pragma: no cover - trains
@@ -243,7 +265,7 @@ class Transformer:
         s = self.settings
         index = {c: i for i, c in enumerate(self.classes)}
         counts = Counter(labels)
-        weights = torch.tensor([len(labels) / (len(self.classes) * counts[c]) for c in self.classes])
+        weights = torch.tensor([len(labels) / (len(self.classes) * counts[c]) for c in self.classes]).to(self.device)
         # All parameters (encoder + new classification head) are optimised: full fine-tuning.
         optimiser = torch.optim.AdamW(self.model.parameters(), lr=s["lr"], weight_decay=s["weight_decay"])
         steps_per_epoch = math.ceil(math.ceil(len(texts) / s["batch_size"]) / s["grad_accum_steps"])
@@ -259,8 +281,8 @@ class Transformer:
             batches = torch.randperm(len(texts), generator=generator).split(s["batch_size"])
             for step, batch in enumerate(batches, start=1):
                 enc = self.tokenizer([texts[i] for i in batch], truncation=True, max_length=s["max_length"],
-                                     padding=True, return_tensors="pt")
-                loss = torch.nn.functional.cross_entropy(self.model(**enc).logits, y[batch], weight=weights)
+                                     padding=True, return_tensors="pt").to(self.device)
+                loss = torch.nn.functional.cross_entropy(self.model(**enc).logits, y[batch].to(self.device), weight=weights)
                 (loss / s["grad_accum_steps"]).backward()
                 losses.append(loss.item())
                 if step % s["grad_accum_steps"] == 0 or step == len(batches):
@@ -275,7 +297,7 @@ class Transformer:
                 entry["validation_score"] = round(score_fn(val_labels, [max(p, key=p.get) for p in probs]), 4)
                 if best_score is None or entry["validation_score"] > best_score:  # ties keep the earlier epoch
                     best_score, self.best_epoch = entry["validation_score"], epoch
-                    best_state = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
+                    best_state = {k: v.detach().to("cpu").clone() for k, v in self.model.state_dict().items()}
             entry["free_ram_gb"], entry["peak_rss_mb"] = free_ram_gb(), peak_rss_mb()
             self.history.append(entry)
             if entry["free_ram_gb"] is not None and entry["free_ram_gb"] < ABORT_FREE_RAM_GB:
@@ -294,7 +316,7 @@ class Transformer:
         with torch.no_grad():
             for i in range(0, len(texts), self.settings["batch_size"]):
                 enc = self.tokenizer(texts[i:i + self.settings["batch_size"]], truncation=True,
-                                     max_length=self.settings["max_length"], padding=True, return_tensors="pt")
+                                     max_length=self.settings["max_length"], padding=True, return_tensors="pt").to(self.model.device)
                 for row in torch.softmax(self.model(**enc).logits, dim=-1).tolist():
                     out.append(dict(zip(self.classes, row)))
         return out
@@ -323,13 +345,18 @@ class Transformer:
         obj._setup()
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
         obj.tokenizer = AutoTokenizer.from_pretrained(directory, local_files_only=True)
-        obj.model = AutoModelForSequenceClassification.from_pretrained(directory, local_files_only=True).to("cpu")
+        obj.model = AutoModelForSequenceClassification.from_pretrained(directory, local_files_only=True).to(obj.device)
         obj.classes = [int(c) if meta["class_type"] == "int" else c for c in meta["classes"]]
         return obj
 
     def config(self) -> dict:
         s = self.settings
-        return {"model": self.name, "revision": TRANSFORMER_REVISION, "offline": True, "device": "cpu", "seed": self.seed,
+        gpu = None
+        if getattr(self, "device", "cpu") == "cuda":
+            import torch
+            gpu = {"name": torch.cuda.get_device_name(0), "peak_allocated_mb": round(torch.cuda.max_memory_allocated() / 1e6, 1)}
+        return {"model": self.name, "revision": TRANSFORMER_REVISION, "offline": True, "device": getattr(self, "device", "cpu"),
+                "gpu": gpu, "seed": self.seed,
                 **s, "effective_batch_size": s["batch_size"] * s["grad_accum_steps"], "class_weighted_loss": True,
                 "fine_tuned_parameters": "all (encoder + classification head)",
                 "scheduler": "linear warmup then linear decay", "gradient_clipping": s["max_grad_norm"],

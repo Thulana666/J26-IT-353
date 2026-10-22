@@ -7,6 +7,7 @@
     "dev": "nodemon server.js",
     "start": "node server.js",
     "collect:articles": "node scripts/collect-articles.js",
+    "process:articles": "node scripts/process-articles.js",
     "backfill:countries": "node scripts/backfill-article-countries.js",
     "test": "node --test"
   },
