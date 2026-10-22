@@ -53,10 +53,15 @@ export function RunAiServicesButton({ canRun }) {
       const job = next.last;
       const problem = job.status !== "completed";
       const outcome = { completed: "Completed", partial: "Completed with issues", failed: "Failed" }[job.status] ?? job.status;
-      const reason = job.error || job.stopped || job.collectionError || (job.sourcesFailed ? `${job.sourcesFailed} source(s) failed` : null);
+      const names = (status) => (job.sources ?? []).filter((s) => s.status === status).map((s) => s.source);
+      const failed = names("failed");
+      const reason = job.error || job.stopped || job.collectionError || (failed.length ? `Failed: ${failed.join(", ")}.` : null);
+      // Skipped sources (no API key, disabled, or blocked by the publisher) are expected, not errors.
+      const skipped = names("skipped");
       setMessage({
         problem,
         text: `${outcome}: ${counts(job)}.${reason ? ` ${reason}` : ""}`,
+        note: skipped.length ? `Skipped: ${skipped.join(", ")}.` : null,
         done: true,
       });
       await refreshNewsPages();
@@ -122,6 +127,7 @@ export function RunAiServicesButton({ canRun }) {
             )}
           </p>
         )}
+        {message?.note && <p className="text-muted-foreground">{message.note}</p>}
         {!job && lastSuccess && (
           <p className="text-muted-foreground">Last successful run: {time(lastSuccess.finishedAt)}</p>
         )}

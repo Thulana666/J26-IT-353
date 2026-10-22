@@ -3,7 +3,7 @@
 // filter: false keeps everything (feeds that are health-only, e.g. a ministry).
 
 const { parseRssItems } = require("../rss");
-const { cleanText, fetchWithTimeout, matchesHealthTopic, normalizeUrl, toIsoDate } = require("../normalize");
+const { SourceUnavailable, cleanText, fetchWithTimeout, matchesHealthTopic, normalizeUrl, toIsoDate } = require("../normalize");
 
 const USER_AGENT = "PharmaTwin research prototype (RSS reader)";
 
@@ -12,6 +12,7 @@ function createRssSource({ source, feeds, filter, author, timezoneOffset = "+05:
     let fetched = 0;
     const articles = [];
     const problems = [];
+    let blocked = 0;
 
     // One feed failing doesn't stop the others.
     for (const feed of feeds) {
@@ -42,11 +43,15 @@ function createRssSource({ source, feeds, filter, author, timezoneOffset = "+05:
           articles.push(article);
         }
       } catch (error) {
+        if (error instanceof SourceUnavailable) blocked += 1;
         problems.push(feeds.length > 1 ? `${feed.url}: ${error.message}` : error.message);
       }
     }
 
-    if (problems.length === feeds.length) throw new Error(problems.join("; "));
+    if (problems.length === feeds.length) {
+      // Every feed blocked by the publisher -> "skipped"; any other failure -> "failed".
+      throw new (blocked === feeds.length ? SourceUnavailable : Error)(problems.join("; "));
+    }
     return { fetched, articles, warnings: problems };
   }
 

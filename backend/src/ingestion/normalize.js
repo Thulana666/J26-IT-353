@@ -101,6 +101,11 @@ async function fetchWithTimeout(url, { timeoutMs = 30000, ...options } = {}) {
     const reason = error.name === "TimeoutError" ? `timed out after ${timeoutMs / 1000}s` : error.cause?.code || error.message;
     throw new Error(`Request to ${new URL(url).host} failed: ${reason}`);
   });
+  // The publisher's bot protection (Cloudflare challenge) refuses automated readers.
+  // This is the site's choice, not a fault here, and it is never bypassed.
+  if (response.status === 403 && response.headers.get("cf-mitigated") === "challenge") {
+    throw new SourceUnavailable(`${new URL(url).host} blocks automated access (bot protection)`);
+  }
   if (!response.ok) {
     // Include the API's own error message (e.g. "apiKeyInvalid") when it sends one.
     const detail = await response
@@ -119,6 +124,9 @@ async function fetchWithTimeout(url, { timeoutMs = 30000, ...options } = {}) {
 // The collector reports it as "skipped" instead of "failed".
 class SourceNotConfigured extends Error {}
 
+// Thrown when the publisher blocks automated access. Also reported as "skipped".
+class SourceUnavailable extends Error {}
+
 module.exports = {
   cleanText,
   normalizeUrl,
@@ -126,4 +134,5 @@ module.exports = {
   matchesHealthTopic,
   fetchWithTimeout,
   SourceNotConfigured,
+  SourceUnavailable,
 };
