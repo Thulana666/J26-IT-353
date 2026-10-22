@@ -94,9 +94,10 @@ NLP-generated `events` with their `event_locations` (code:
 
 1. Run `supabase/migrations/20261021000000_add_article_analysis_fields.sql`
    (additive). The processor refuses to start without it.
-2. Start the AI service with the deployed checkpoint, for example
-   `EVENT_INTEL_MODEL_DIR=<run>/checkpoint_category`. Without a loaded model,
-   runs stop rather than store rules-only results.
+2. Copy `ai-service/.env.example` to `ai-service/.env` (it points
+   `EVENT_INTEL_MODEL_DIR` at the deployed seed-13 checkpoint), then start the
+   AI service. Without a loaded model, runs pause rather than store rules-only
+   results.
 3. Set `AI_SERVICE_URL` in `backend/.env` if the service is not on
    `http://localhost:8000`.
 4. Trigger processing:

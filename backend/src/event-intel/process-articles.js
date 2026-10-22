@@ -45,14 +45,18 @@ async function classify(article, { fetchImpl = fetch, timeoutMs = TIMEOUT_MS } =
     });
   } catch (error) {
     if (error.name === "TimeoutError") throw new Error(`AI service timed out after ${timeoutMs / 1000}s`);
-    throw new ServiceUnavailable(`AI service not reachable at ${aiUrl()} (${error.message})`);
+    console.warn(`[event-intel] AI service not reachable at ${aiUrl()}: ${error.message}`);
+    throw new ServiceUnavailable("The AI service is not running. Start it, then analyse again.");
   }
   const body = await response.json().catch(() => ({}));
   const detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? body).slice(0, 500);
-  if (response.status === 501) throw new ServiceUnavailable(`No event model loaded on the AI service: ${detail}`);
+  if (response.status === 501) {
+    console.warn(`[event-intel] AI service has no model loaded: ${detail}`);
+    throw new ServiceUnavailable("The AI model is not loaded. Check EVENT_INTEL_MODEL_DIR in ai-service/.env and restart the AI service.");
+  }
   if (response.status === 422) throw new PermanentFailure(`AI service rejected the article (422): ${detail}`);
   if (!response.ok) throw new Error(`AI service error ${response.status}: ${detail}`);
-  if (body.model?.status !== "ok") throw new ServiceUnavailable("AI service answered without a model result");
+  if (body.model?.status !== "ok") throw new ServiceUnavailable("The AI model is not loaded. Restart the AI service.");
   return body;
 }
 

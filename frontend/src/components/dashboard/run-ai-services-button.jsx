@@ -55,7 +55,7 @@ export function RunAiServicesButton({ canRun }) {
       const outcome = { completed: "Completed", partial: "Completed with issues", failed: "Failed" }[job.status] ?? job.status;
       const names = (status) => (job.sources ?? []).filter((s) => s.status === status).map((s) => s.source);
       const failed = names("failed");
-      const reason = job.error || job.stopped || job.collectionError || (failed.length ? `Failed: ${failed.join(", ")}.` : null);
+      const reason = job.error || (job.stopped && `Analysis paused. ${job.stopped} Articles stay pending.`) || job.collectionError || (failed.length ? `Failed: ${failed.join(", ")}.` : null);
       // Skipped sources (no API key, disabled, or blocked by the publisher) are expected, not errors.
       const skipped = names("skipped");
       setMessage({
