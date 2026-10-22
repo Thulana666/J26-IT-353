@@ -92,9 +92,6 @@ export default async function RecentNewsPage({ searchParams }) {
             Last analysed {freshness.lastAnalysedAt ? formatDateTime(freshness.lastAnalysedAt) : "never"}
           </span>
           <span>{freshness.pending} awaiting analysis</span>
-          {freshness.failed > 0 && (
-            <span className="text-destructive">{freshness.failed} failed (retried up to 3 times)</span>
-          )}
           <span className="ml-auto">Times in Sri Lanka time</span>
         </div>
       )}

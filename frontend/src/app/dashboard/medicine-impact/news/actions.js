@@ -3,9 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { requireUser } from "@/lib/auth";
 
-// Server-to-server calls to the backend's news pipeline. The shared
-// INGESTION_API_KEY and the private AI service never reach the browser.
-// Admins only, like the other collection/analysis actions.
+// Server actions that talk to the backend. The API key stays on the server.
 
 async function callBackend(path, init = {}) {
   const { profile } = await requireUser();

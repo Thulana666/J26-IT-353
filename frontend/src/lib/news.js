@@ -1,5 +1,5 @@
-// Recent News page: URL filters -> Supabase query on analysed articles.
-// Pure (no Next.js or path aliases) so it can be unit-tested with node --test.
+// Filters, sorting and paging for the Recent News page.
+// No Next.js imports here so the tests can run with plain node.
 
 export const NEWS_PER_PAGE = 20;
 
@@ -57,7 +57,7 @@ export function applyNewsQuery(query, filters, pageSize = NEWS_PER_PAGE) {
   query = query.eq("processing_status", "processed");
   query = filters.relevance ? query.eq("sri_lanka_relevance", filters.relevance) : query.in("sri_lanka_relevance", NEWS_RELEVANCE);
 
-  // Default: every event category; "other" only when it is not a decided event (null = unanalysed text, e.g. non-English).
+  // Hide articles classified as "other". Unclassified ones (e.g. non-English) still show.
   const categoryClause = filters.category ? null : "or(event_category.is.null,event_category.neq.other)";
   if (filters.category) query = query.eq("event_category", filters.category);
   const searchClause = filters.q
@@ -70,7 +70,7 @@ export function applyNewsQuery(query, filters, pageSize = NEWS_PER_PAGE) {
   if (filters.review === "yes") query = query.eq("needs_review", true);
   if (filters.review === "no") query = query.eq("needs_review", false);
 
-  // Newest publication first; articles without a publication date follow, newest collected first.
+  // Newest first. Articles without a publish date go at the end.
   const from = (filters.page - 1) * pageSize;
   return query
     .order("published_at", { ascending: false, nullsFirst: false })

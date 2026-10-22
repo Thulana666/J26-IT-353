@@ -236,7 +236,8 @@ test("service unreachable or no model: run stops, article released without using
     const { db, client } = makeDb({ event_articles: [article("f1"), article("f2")] });
     const fetchImpl = fakeFetch(() => answer);
     const summary = await processArticles(client, { fetchImpl, now: () => NOW });
-    assert.ok(summary.stopped);
+    assert.match(summary.stopped, answer instanceof Error ? /AI service is not running/ : /AI model is not loaded/);
+    assert.doesNotMatch(summary.stopped, /[{}]/); // no raw JSON shown to users
     assert.equal(fetchImpl.calls.length, 1); // second article not tried
     assert.deepEqual([db.event_articles[0].processing_status, db.event_articles[0].processing_attempts], ["pending", 0]);
   }

@@ -1,17 +1,12 @@
-// Article processor: pending event_articles -> AI service (POST /event-intel/classify)
-// -> analysis, Sri Lanka relevance, review flag and (for relevant events) an
-// NLP-generated event -> processing_status = processed.
+// Sends pending articles to the AI service, saves the result (category,
+// relevance, review flag) and links relevant ones to an event.
 //
-// Reliability rules:
-//   * Bounded: at most `limit` articles per run, each tried at most MAX_ATTEMPTS times.
-//   * Each article is claimed with a conditional update, so two runs never
-//     process the same article; a claim left in 'processing' by a crashed run
-//     is reclaimed after STALE_MINUTES.
-//   * An article is marked processed only after its analysis (and event link)
-//     has been written. Event creation is keyed by events.dedupe_key, so retries
-//     never duplicate events or links.
-//   * Service-level problems (no model loaded, service unreachable) stop the run
-//     and release the claimed article without using up an attempt.
+// A few things this has to get right:
+//   - each article is "claimed" first, so two runs never handle the same one
+//   - failed articles are retried, but only MAX_ATTEMPTS times
+//   - an article is only marked processed once everything is saved
+//   - events use a dedupe key, so retries don't create duplicates
+//   - if the AI service is down we stop the run and don't count it as an attempt
 
 const { analysisVersion, assessRelevance, buildRequest, eventPlan, precheck } = require("./assess");
 
@@ -21,7 +16,8 @@ const GROUP_WINDOW_DAYS = 28; // a related article joins an event of its group s
 const RETRY_AFTER_MINUTES = 5; // a failed article waits this long before its next attempt
 const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 200;
-const TIMEOUT_MS = 30_000;
+// The AI service loads its model on the first request after it starts (can take ~1 min).
+const TIMEOUT_MS = 120_000;
 
 const aiUrl = () => (process.env.AI_SERVICE_URL || process.env.SPATIAL_SERVICE_URL || "http://localhost:8000").replace(/\/$/, "");
 
@@ -32,8 +28,8 @@ const ARTICLE_COLUMNS = `id, title, summary, content, url, language, country_cod
 class ServiceUnavailable extends Error {}
 class PermanentFailure extends Error {}
 
-// One classify call. Throws ServiceUnavailable (stop the run), PermanentFailure
-// (bad input: do not retry) or Error (retry later).
+// Classifies one article. ServiceUnavailable stops the run, PermanentFailure
+// means bad input (no retry), and any other error is retried later.
 async function classify(article, { fetchImpl = fetch, timeoutMs = TIMEOUT_MS } = {}) {
   let response;
   try {
@@ -45,14 +41,18 @@ async function classify(article, { fetchImpl = fetch, timeoutMs = TIMEOUT_MS } =
     });
   } catch (error) {
     if (error.name === "TimeoutError") throw new Error(`AI service timed out after ${timeoutMs / 1000}s`);
-    throw new ServiceUnavailable(`AI service not reachable at ${aiUrl()} (${error.message})`);
+    console.warn(`[event-intel] AI service not reachable at ${aiUrl()}: ${error.message}`);
+    throw new ServiceUnavailable("The AI service is not running. Start it, then analyse again.");
   }
   const body = await response.json().catch(() => ({}));
   const detail = typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail ?? body).slice(0, 500);
-  if (response.status === 501) throw new ServiceUnavailable(`No event model loaded on the AI service: ${detail}`);
+  if (response.status === 501) {
+    console.warn(`[event-intel] AI service has no model loaded: ${detail}`);
+    throw new ServiceUnavailable("The AI model is not loaded. Check EVENT_INTEL_MODEL_DIR in ai-service/.env and restart the AI service.");
+  }
   if (response.status === 422) throw new PermanentFailure(`AI service rejected the article (422): ${detail}`);
   if (!response.ok) throw new Error(`AI service error ${response.status}: ${detail}`);
-  if (body.model?.status !== "ok") throw new ServiceUnavailable("AI service answered without a model result");
+  if (body.model?.status !== "ok") throw new ServiceUnavailable("The AI model is not loaded. Restart the AI service.");
   return body;
 }
 
@@ -75,7 +75,7 @@ async function findCandidates(supabase, limit, now) {
   return data;
 }
 
-// Conditional claim: succeeds only if nobody changed the row since it was read.
+// Only succeeds if nobody else changed the row since we read it.
 async function claim(supabase, article, now) {
   const { data, error } = await supabase
     .from("event_articles")
@@ -196,7 +196,7 @@ async function linkEvent(supabase, article, plan, assessment, needsReview) {
   const update = {};
   if (needsReview && !event.needs_review) Object.assign(update, { needs_review: true, status: "monitoring" });
   if (assessment.relevance === "direct" && event.sri_lanka_relevance !== "direct") update.sri_lanka_relevance = "direct";
-  // Articles are not processed in publication order: the event starts at its earliest article's week.
+  // Articles don't arrive in date order, so keep the earliest start date.
   if (event.started_at && plan.startedAt < event.started_at) update.started_at = plan.startedAt;
   if (Object.keys(update).length > 0) {
     const { error } = await supabase.from("events").update(update).eq("id", event.id);
@@ -253,7 +253,7 @@ async function processOne(supabase, article, options) {
   return { outcome: "processed", relevance: assessment.relevance, needsReview, eventId };
 }
 
-// Fails loudly (before touching any article) if the migration has not been applied.
+// Stop early if the analysis migration hasn't been run yet.
 async function checkSchema(supabase) {
   const { error } = await supabase
     .from("event_articles")

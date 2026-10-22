@@ -3,8 +3,7 @@
 //   npm run process:articles              up to 25 articles
 //   npm run process:articles -- 200       up to 200 articles (in batches of 25)
 //
-// Needs the AI service running with EVENT_INTEL_MODEL_DIR set (see README).
-// Uses the service-role Supabase client from backend/.env (server-side only).
+// The AI service must be running (see README).
 
 require("dotenv").config({ quiet: true });
 

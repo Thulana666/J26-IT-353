@@ -6,6 +6,8 @@ Configuration (environment variables; nothing is hard-coded to a machine):
   EVENT_INTEL_MODEL_SHA256       optional: expected SHA-256 of model.safetensors; a mismatch is rejected
   EVENT_INTEL_HYBRID_THRESHOLD   optional: hybrid confidence threshold. Default: the validation-selected
                                  threshold in the training run's run.json next to the checkpoint
+  Values may also be set in ai-service/.env (KEY=value lines; see .env.example). Variables already
+  set in the environment take precedence. A relative EVENT_INTEL_MODEL_DIR is read from ai-service/.
   EVENT_INTEL_REVIEW_MIN_CONFIDENCE  optional: review-budget policy, default 0.9 (provisional, not a
                                  validated cutoff). Lower model confidence asks for human review; it
                                  never changes the category or the hybrid decision.
@@ -52,6 +54,29 @@ EXPECTED_CLASSES = sorted(SUPPORTED_CATEGORIES)  # the order Transformer.fit sto
 REQUIRED_FILES = ("model.safetensors", "config.json", "tokenizer.json", "tokenizer_config.json", "classifier_meta.json")
 NOT_PREDICTED_BY_MODEL = ("relevance", "event_scope", "entities", "diseases", "severity", *UNSUPPORTED_CATEGORIES)
 SERVICE_VERSION = "1.0"
+SERVICE_ROOT = Path(__file__).resolve().parents[2]  # ai-service/
+
+
+def load_env_file(path: Path = SERVICE_ROOT / ".env") -> None:
+    """Read KEY=value lines from ai-service/.env without overriding variables already set.
+    Kept dependency-free on purpose (no python-dotenv in the service requirements)."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = (part.strip() for part in line.split("=", 1))
+        os.environ.setdefault(key, value.strip("\"'"))
+
+
+load_env_file()
+
+
+def model_dir(raw: str) -> Path:
+    """A relative model path is relative to ai-service/, so .env works from any working directory."""
+    path = Path(raw)
+    return path if path.is_absolute() else SERVICE_ROOT / path
 
 
 class ModelUnavailableError(RuntimeError):
@@ -165,11 +190,11 @@ def get_model() -> LoadedModel:
     raw = os.environ.get(MODEL_DIR_ENV, "").strip()
     if not raw:
         raise ModelUnavailableError("not_configured", f"{MODEL_DIR_ENV} is not set")
-    key = (str(Path(raw).resolve()), os.environ.get(MODEL_SHA_ENV, ""), os.environ.get(THRESHOLD_ENV, ""))
+    key = (str(model_dir(raw).resolve()), os.environ.get(MODEL_SHA_ENV, ""), os.environ.get(THRESHOLD_ENV, ""))
     with _lock:
         if key not in _cache:
             try:
-                _cache[key] = _load(Path(raw))
+                _cache[key] = _load(model_dir(raw))
             except ModelUnavailableError as error:
                 log.warning("Event model unavailable: %s", error)
                 _cache[key] = error

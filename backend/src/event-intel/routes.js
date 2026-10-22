@@ -1,6 +1,5 @@
-// HTTP triggers for NLP analysis of collected articles, used by the dashboard
-// (server-to-server). Protected by the same shared secret as article
-// collection (INGESTION_API_KEY); the browser never calls these directly.
+// Endpoints the dashboard uses to analyse articles. Only the Next.js server
+// calls these (with INGESTION_API_KEY), never the browser.
 
 const express = require("express");
 const supabase = require("../config/supabase");

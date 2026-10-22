@@ -11,9 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 const ALL = "all";
 const SEARCH_DELAY_MS = 400;
 
-// Filter bar for Recent News. Every change updates the URL (?q=&category=...),
-// which re-renders the server page, so results, pagination and links stay shareable.
-// `filters` = [{ name, label, options: [[value, text]] }].
+// Search and filter bar for Recent News. Filters live in the URL so the page
+// can be bookmarked or shared.
 export function NewsFilters({ filters, values }) {
   const router = useRouter();
   const pathname = usePathname();

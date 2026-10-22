@@ -15,7 +15,8 @@ function analysisNote(a) {
   if (a.error) return { problem: true, text: `Analysis failed: ${a.error}` };
   const text = `Analysed ${a.processed} article${a.processed === 1 ? "" : "s"}` +
     (a.needsReview ? `, ${a.needsReview} need review` : "") + (a.failed ? `, ${a.failed} failed` : "") + ".";
-  return a.stopped ? { problem: true, text: `${text} Stopped: ${a.stopped}` } : { problem: a.failed > 0, text };
+  // Paused analysis is not a data error: articles stay pending and are analysed next time.
+  return a.stopped ? { problem: true, text: `Analysis paused. ${a.stopped} Articles stay pending.` } : { problem: a.failed > 0, text };
 }
 
 // Runs the article collector (which then analyses a first batch) or the NLP

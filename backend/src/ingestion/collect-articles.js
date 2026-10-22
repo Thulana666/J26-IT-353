@@ -10,7 +10,7 @@ const dailyMirror = require("./sources/daily-mirror");
 const dailyNews = require("./sources/daily-news");
 const sundayObserver = require("./sources/sunday-observer");
 const { findCountryCode } = require("./countries");
-const { SourceNotConfigured } = require("./normalize");
+const { SourceNotConfigured, SourceUnavailable } = require("./normalize");
 
 // Keys are used on the command line: npm run collect:articles -- gdacs who
 const SOURCES = {
@@ -102,7 +102,7 @@ async function collectArticles(supabase, { only } = {}) {
         if (warnings?.length) result.warnings = warnings;
       }
     } catch (error) {
-      result.status = error instanceof SourceNotConfigured ? "skipped" : "failed";
+      result.status = error instanceof SourceNotConfigured || error instanceof SourceUnavailable ? "skipped" : "failed";
       result.error = error.message;
     }
     result.seconds = Math.round((Date.now() - started) / 100) / 10;
