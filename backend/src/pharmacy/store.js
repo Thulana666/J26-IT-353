@@ -61,7 +61,27 @@ function getInventory(pharmacyId) {
 
 // Packs on their way to the pharmacy, in dispensing units, per product:
 // shipped but not yet received, plus submitted orders not yet dispatched.
-async function getIncomingUnits(pharmacyId) {
+// Warehouse fulfilment statuses of an order the warehouse has accepted but not shipped yet.
+const ACCEPTED_FULFILMENT = new Set(["allocated", "picking", "ready"]);
+
+// Stock ordered from the warehouse, in dispensing units per product:
+//   incoming: confirmed - shipments in transit, plus submitted orders the
+//             warehouse has accepted (a live fulfilment allocated to them),
+//   awaiting: submitted orders the warehouse has not accepted yet. These are
+//             not counted in the inventory position (they may never ship).
+// Without the warehouse fulfilment table, submitted orders count as incoming.
+async function getOrderedUnits(pharmacyId) {
+  const submittedQuery = (withFulfilment) => () =>
+    supabase
+      .from("purchase_order_items")
+      .select(
+        `medicine_id, quantity_ordered, medicine:medicines(units_per_pack), purchase_order:purchase_orders!inner(status${
+          withFulfilment ? ", fulfilments:warehouse_order_fulfilments(status)" : ""
+        })`
+      )
+      .eq("pharmacy_id", pharmacyId)
+      .eq("purchase_order.status", "submitted")
+      .order("id");
   const [inTransit, submitted] = await Promise.all([
     fetchAll(() =>
       supabase
@@ -71,20 +91,27 @@ async function getIncomingUnits(pharmacyId) {
         .eq("shipment.status", "in_transit")
         .order("id")
     ),
-    fetchAll(() =>
-      supabase
-        .from("purchase_order_items")
-        .select("medicine_id, quantity_ordered, purchase_order:purchase_orders!inner(status), medicine:medicines(units_per_pack)")
-        .eq("pharmacy_id", pharmacyId)
-        .eq("purchase_order.status", "submitted")
-        .order("id")
-    ),
+    fetchAll(submittedQuery(true)).catch((error) => {
+      // Older databases without the warehouse fulfilment module.
+      if (["PGRST200", "PGRST205", "42P01"].includes(error.dbCode)) return fetchAll(submittedQuery(false));
+      throw error;
+    }),
   ]);
   const incoming = new Map();
-  const add = (medicineId, units) => incoming.set(medicineId, (incoming.get(medicineId) ?? 0) + units);
-  for (const row of inTransit) add(row.medicine_id, row.quantity_shipped * row.units_per_pack);
-  for (const row of submitted) add(row.medicine_id, row.quantity_ordered * (row.medicine?.units_per_pack ?? 1));
-  return incoming;
+  const awaiting = new Map();
+  const add = (map, medicineId, units) => map.set(medicineId, (map.get(medicineId) ?? 0) + units);
+  for (const row of inTransit) add(incoming, row.medicine_id, row.quantity_shipped * row.units_per_pack);
+  for (const row of submitted) {
+    const units = row.quantity_ordered * (row.medicine?.units_per_pack ?? 1);
+    const fulfilments = row.purchase_order?.fulfilments;
+    const accepted = fulfilments === undefined || fulfilments.some((f) => ACCEPTED_FULFILMENT.has(f.status));
+    add(accepted ? incoming : awaiting, row.medicine_id, units);
+  }
+  return { incoming, awaiting };
+}
+
+async function getIncomingUnits(pharmacyId) {
+  return (await getOrderedUnits(pharmacyId)).incoming;
 }
 
 // Daily units sold and closing stock per product (see pharmacy_daily_demand()).
@@ -120,6 +147,7 @@ module.exports = {
   userNames,
   getInventory,
   getIncomingUnits,
+  getOrderedUnits,
   getDailyDemand,
   getReorderSettings,
 };

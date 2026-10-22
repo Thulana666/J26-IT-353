@@ -159,6 +159,15 @@ export async function settleDiscrepancyHoldAction(_previous, formData) {
 // --- Orders --------------------------------------------------------------------
 
 // { items: [{ medicineId, quantity, recommendationId? }], notes }
+// Packs the pharmacy can order from its warehouse now ({ warehouse, stock, checkedAt, ... }).
+export async function warehouseStockAction() {
+  try {
+    return { ok: true, result: await pharmacyApi("/pharmacy/orders/warehouse-stock") };
+  } catch (error) {
+    return failure(error);
+  }
+}
+
 export async function createOrderAction(payload) {
   try {
     const { order } = await pharmacyApi("/pharmacy/orders", { method: "POST", body: payload });

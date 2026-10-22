@@ -98,6 +98,35 @@ export function ActualVsEstimatedChart({ history, points, unitLabel = "units", w
   );
 }
 
+// Analytics: units sold per day, then the forecast for the coming days (two
+// series; the forecast starts after the last recorded day).
+export function DemandForecastChart({ history, forecast, unitLabel = "units", forecastLabel = "Forecast" }) {
+  const last = history.at(-1)?.date;
+  const future = (forecast ?? []).map((value, i) => {
+    const d = new Date(`${last}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + i + 1);
+    return { date: d.toISOString().slice(0, 10), actual: null, forecast: value };
+  });
+  const data = [
+    ...history.map((d, i) => ({ date: d.date, actual: d.sold, forecast: i === history.length - 1 && future.length ? d.sold : null })),
+    ...future,
+  ];
+  return (
+    <Frame height={280} label={`Daily ${unitLabel} sold and the demand forecast`}>
+      <LineChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+        <CartesianGrid vertical={false} stroke={GRID} />
+        <XAxis dataKey="date" tickFormatter={shortDate} tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }} minTickGap={28} />
+        <YAxis tick={AXIS} tickLine={false} axisLine={false} width={40} allowDecimals={false} />
+        <Tooltip {...tooltipStyle} labelFormatter={shortDate} formatter={(value, name) => [`${num(value)} ${unitLabel}`, name]} />
+        <Legend iconType="plainline" wrapperStyle={{ fontSize: 12 }} />
+        {last && <ReferenceLine x={last} stroke={MUTED} strokeDasharray="3 3" />}
+        <Line dataKey="actual" name="Sold" stroke={SERIES[0]} strokeWidth={2} dot={false} connectNulls={false} isAnimationActive={false} />
+        <Line dataKey="forecast" name={forecastLabel} stroke={SERIES[1]} strokeWidth={2} strokeDasharray="5 4" dot={false} connectNulls={false} isAnimationActive={false} />
+      </LineChart>
+    </Frame>
+  );
+}
+
 // Analytics: closing stock per day with the reorder point (single series).
 export function StockLevelChart({ history, reorderPoint, unitLabel = "units" }) {
   const data = history.filter((d) => d.closingOnHand !== null).map((d) => ({ date: d.date, stock: d.closingOnHand }));
