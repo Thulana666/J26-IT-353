@@ -87,6 +87,8 @@ const toModel = (model) =>
     metrics: model.metrics,
     units: model.units,
     trainedAt: model.trainedAt,
+    // Trained by the Python AI service (scikit-learn).
+    trainedBy: model.trainedBy,
     productsUsingModel: Object.values(model.perProduct ?? {}).filter((p) => p.selected).length,
     products: Object.keys(model.perProduct ?? {}).length,
   };

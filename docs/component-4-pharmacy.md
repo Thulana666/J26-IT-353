@@ -44,7 +44,8 @@ Browser ◄── Supabase Realtime (RLS applies): shipments, discrepancies, ret
 | `supabase/seed/sample_pharmacy.sql` | optional SAMPLE pharmacies, prices, barcodes and **synthetic** history |
 | `supabase/seed/remove_synthetic_history.sql` | removes only the synthetic history before evaluation, keeping current stock |
 | `backend/src/pharmacy/` | `routes/`, `auth.js`, `validation.js` (Zod), `fefo.js`, `analytics/` |
-| `backend/src/pharmacy/analytics/` | `demand.js` (burn rate, moving average, actual vs estimated), `linear-regression.js` (demand model), `forecast-provider.js`, `reorder.js` (Q*), `depletion.js` (stock cover, expiry risk), `alert-rules.js`, `service.js`, `research.js` |
+| `backend/src/pharmacy/analytics/` | `demand.js` (burn rate, moving average, actual vs estimated), `ai-demand-client.js` (calls the Python demand model), `forecast-provider.js` (stored model forecasts or moving average), `reorder.js` (Q*), `depletion.js` (stock cover, expiry risk), `alert-rules.js`, `service.js`, `research.js` |
+| `ai-service/pharmacy_demand/` | Python demand model: scikit-learn ridge regression, evaluation and forecasts, `POST /pharmacy-demand/train` |
 | `frontend/src/app/dashboard/pharmacy/` | pages and server actions |
 | `frontend/src/components/pharmacy/`, `frontend/src/lib/pharmacy/` | UI components, barcode input, charts, API client, labels |
 
@@ -187,9 +188,9 @@ and is idempotent: confirming an already received return changes nothing
   is marked *insufficient history*; no history or no sales give a status, not a number.
 - **Days of stock cover** = usable available stock ÷ burn rate (statuses for
   out of stock, no recent sales, no history; never infinite).
-- **Demand forecast**: a pooled **linear regression** (`linear-regression.js`)
-  where it beats the moving average, otherwise the moving average of the
-  window (`forecast-provider.js`). See *Demand model* below.
+- **Demand forecast**: made by a pooled **linear regression** in the Python AI
+  service where it beats the moving average, otherwise the moving average of
+  the window (`forecast-provider.js`). See *Demand model* below.
 - **Q\*** (rule-based, not EOQ):
   ```
   Inventory position = usable on hand + confirmed incoming − reserved
@@ -210,15 +211,25 @@ and is idempotent: confirming an already received return changes nothing
 - **Actual vs estimated**: for each recent day, the moving average of the
   window before it compared with what was sold (MAE, RMSE, bias). Measured on
   recorded sales only; shown only with enough history.
-- **Demand model** (trained when staff press **Recalculate**, stored with
-  that run in `pharmacy_forecast_runs.summary.model`; the live pages apply
-  the latest run's model):
+- **Demand model**: all model code is Python (`ai-service/pharmacy_demand`,
+  `POST /pharmacy-demand/train`). When staff press **Recalculate**, the
+  backend sends each product's daily series (training window + history up to
+  yesterday); the service is stateless and has no database access. It trains,
+  evaluates and forecasts the next 30 days of every product. The backend
+  validates the result and stores the model, its evaluation and the forecasts
+  with the run (`pharmacy_forecast_runs.summary.model`, forecast rows in
+  `pharmacy_demand_forecasts`). The live pages, Q* and alerts read the latest
+  stored forecasts, aligned to today; the backend does no model computation.
+  Without the AI service, or when the latest forecasts are more than 7 days old,
+  the moving average is used and the run says why.
   - target: next-day units sold; features: previous day, same day last week,
     7-day mean (each divided by the product's own 28-day mean, so one model
     fits all products) and day of week. Features use only earlier days; stock
     is never a feature; days that ended out of stock are not targets.
-  - least squares with a small ridge penalty (λ = 1), forecast day by day for
-    30 days, never negative.
+  - fitted with **scikit-learn** `Ridge(alpha=1)` (intercept not penalised);
+    a test checks it against the closed-form ridge solution.
+  - forecast day by day for 30 days from the latest day, never negative; no
+    forecast for a product without 28 stocked recent days (moving average).
   - evaluation: the last 28 days are held out; the model (fitted on the days
     before) and the 28-day moving average predict each held-out day one step
     ahead; MAE and RMSE in dispensing units/day. A product uses the regression
@@ -227,7 +238,18 @@ and is idempotent: confirming an already received return changes nothing
   - data: real POS history once it covers ≥ 90 days; until then the labelled
     sample history (`synthetic_seed`), shown as a demonstration, not
     real-world accuracy. `npm run train:pharmacy-model` prints the report
-    without writing anything.
+    (the AI service must be running) without writing anything. Set
+    `PHARMACY_FORECAST_INTERVAL_HOURS` (e.g. 24) to recalculate automatically.
+  - offline CSV evaluation: `python -m pharmacy_demand.csv_dataset sales.csv
+    [--test-days 14] [--out report.json]` (from `ai-service/`) checks a daily
+    sales CSV (`date, pharmacy_id, product_id, product_name, dispensing_unit,
+    units_sold`; ISO or M/D/YYYY dates) and runs the same `train()` on it. It
+    prints the dataset profile, held-out MAE/RMSE against the moving average and
+    the per-product choice; nothing is stored. A CSV has no stock levels, so
+    every day counts as in stock, and fewer than 90 days are flagged as
+    unstable. Its forecasts start the day after the file ends, so they are not
+    used by the live pages (more than 7 days old); live Q* uses forecasts from
+    a recalculation on recorded sales.
 - **Alerts**: low stock, reorder (critical when stock will not last the lead
   time), near expiry, expired, unusual consumption. Recomputed after sales,
   receipts and returns and on demand; cleared automatically.
@@ -293,6 +315,10 @@ warehouse has resolved the report; the warehouse only resolves it.
    `supabase/seed/sample_pharmacy.sql` (cleanup SQL at the bottom).
 3. Assign roles in Settings → Users and access (or SQL on `profiles`).
 4. Backend: `cd backend && npm install && npm run dev` (see `backend/.env.example`).
+   AI service (demand model training): `cd ai-service`, install
+   `requirements.txt` into its virtual environment, `uvicorn main:app --port 8000`
+   (`AI_SERVICE_URL`, default `SPATIAL_SERVICE_URL`). Without it the
+   analytics use the moving average.
 5. Frontend: `cd frontend && npm install && npm run dev` → **Pharmacy** in the sidebar.
 6. Analytics → **Recalculate recommendations** (or set `PHARMACY_FORECAST_INTERVAL_HOURS`).
 
@@ -301,6 +327,7 @@ warehouse has resolved the report; the warehouse only resolves it.
 ```bash
 cd backend && npm test        # unit, access, database (PGlite) and concurrency (embedded PostgreSQL) tests
 cd frontend && npm run lint && npm run build
+cd ai-service && .venv/Scripts/python -m unittest tests.test_pharmacy_demand
 ```
 
 - `test/pharmacy/analytics.test.js`: burn rate, stock cover, moving average,
@@ -317,9 +344,18 @@ cd frontend && npm run lint && npm run build
   transfer, one write-off of a held report. Skipped if the embedded server
   cannot start on the machine.
 - `test/pharmacy/stock.test.js`: usable stock in the analytics excludes held units.
-- `test/pharmacy/linear-regression.test.js`: least squares, no look-ahead in
-  features, out-of-stock days excluded, chronological holdout vs the moving
-  average, non-negative forecast, provider fallback, recommendation reason.
+- `test/pharmacy/ai-demand-client.test.js`: the AI-service result is used
+  when valid; unreachable, failing or malformed answers (wrong coefficients,
+  short or negative forecasts) give a fallback with a reason.
+- `test/pharmacy/forecast-provider.test.js`: stored forecasts aligned to today,
+  stale or missing forecasts not used, model only where it won, recommendation reason.
+- `ai-service/tests/test_pharmacy_demand.py`: scikit-learn matches the
+  closed-form ridge solution, no look-ahead, out-of-stock days excluded,
+  chronological holdout, training window, forecasts (length, never negative,
+  none without recent history), input validation, the API handler.
+- `ai-service/tests/test_pharmacy_demand_csv.py`: CSV profile, ISO and
+  M/D/YYYY dates, ambiguous dates refused, duplicates/gaps/negative sales
+  reported, chronological holdout, short-history note, CLI exit codes.
 
 ## Limitations
 
@@ -329,5 +365,6 @@ cd frontend && npm run lint && npm run build
 - The demand model is a small linear regression (day of week and recent
   demand); it does not model events or long-term trends. Until real POS
   history exists it is trained on sample data, so its accuracy figures
-  describe the sample generator, not real demand. The provider interface is
-  where a Python ai-service model could replace it.
+  describe the sample generator, not real demand. Heavier models (e.g.
+  gradient boosting) can be added in `ai-service/pharmacy_demand` behind the
+  same endpoint and provider interface.

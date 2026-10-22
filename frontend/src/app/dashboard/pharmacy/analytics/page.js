@@ -205,7 +205,8 @@ function ModelCard({ model, training }) {
           {model.trainedOn.sample
             ? `Trained and evaluated on sample (synthetic) history, ${formatDate(model.trainedOn.from)} – ${formatDate(model.trainedOn.to)}: a demonstration of the method, not real-world accuracy.`
             : `Trained on POS sales, ${formatDate(model.trainedOn.from)} – ${formatDate(model.trainedOn.to)}.`}{" "}
-          Used for {model.productsUsingModel} of {model.products} products (where it beat the moving average); the rest use the moving average.
+          Used for {model.productsUsingModel} of {model.products} products (where it beat the moving average); the rest use the moving average.{" "}
+          {`Trained with ${model.trainedBy?.library ?? "scikit-learn"} in the Python AI service.`}
         </CardDescription>
       </CardHeader>
       <CardContent className="px-0">

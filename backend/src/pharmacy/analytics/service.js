@@ -4,10 +4,12 @@
 //   1. daily units sold per product from the pharmacy's own sale items, with
 //      the closing stock of each day from the stock ledger
 //      (pharmacy_daily_demand()),
-//   2. trains the pooled linear-regression demand model (linear-regression.js)
-//      and evaluates it against the moving average on held-out days; each
-//      product uses the regression only where it was more accurate, otherwise
-//      the moving average (forecast-provider.js),
+//   2. has the Python AI service (scikit-learn, ai-service/pharmacy_demand)
+//      train the demand model, evaluate it against the moving average on
+//      held-out days and forecast every product; the forecasts are stored with
+//      the run. Each product uses the model's forecast only where it was more
+//      accurate, otherwise the moving average (forecast-provider.js). Without
+//      the AI service the run uses the moving average and says why,
 //   3. burn rate, stock cover, Q*, stockout and expiry risk per product, and an
 //      actual-versus-estimated backtest of the moving average,
 //   4. stores the run, the estimates and the recommendations, then refreshes
@@ -17,7 +19,7 @@ const { supabase, today, addDays, rpc, getInventory, getOrderedUnits, getDailyDe
 const { unwrap } = require("../errors");
 const { daysBetween } = require("../dates");
 const { round } = require("./stats");
-const { FEATURES, LOOKBACK, evaluateHoldout, fitRidge } = require("./linear-regression");
+const { trainOnAiService } = require("./ai-demand-client");
 const { getProvider } = require("./forecast-provider");
 const { backtestMovingAverage, consumptionChange } = require("./demand");
 const { computeReorder, explain } = require("./reorder");
@@ -28,14 +30,12 @@ const HISTORY_DAYS = Number(process.env.PHARMACY_HISTORY_DAYS) || 180;
 const HORIZON_DAYS = 30;
 const BACKTEST_DAYS = 28;
 
-// Demand model training. Real POS history is used once it covers at least
-// MIN_REAL_HISTORY_DAYS; until then the model is trained on the labelled sample
-// history (sales.source = 'synthetic_seed') as a demonstration of the method.
+// Demand model training (in the AI service). Real POS history is used once it
+// covers at least MIN_REAL_HISTORY_DAYS; until then the model is trained on the
+// labelled sample history (sales.source = 'synthetic_seed') as a demonstration.
 const MIN_REAL_HISTORY_DAYS = 90;
 const MODEL_TEST_DAYS = 28;
 const MODEL_LAMBDA = 1;
-// Held-out days a product needs before its own comparison selects the model.
-const MIN_SELECT_OBSERVATIONS = 14;
 
 // "strip of 10 tablets" -> "strips", "single-dose vial" -> "vials".
 function unitLabelOf(product) {
@@ -222,55 +222,78 @@ async function trainingPeriod(pharmacyId) {
 
 const roundMetrics = (m) => ({ mae: round(m.mae, 3), rmse: round(m.rmse, 3) });
 
-// Trains and evaluates the demand model for one pharmacy. Read-only.
+// Has the AI service train and evaluate the demand model for one pharmacy and
+// forecast every product. Read-only (nothing is written here).
 // -> { status: "trained", model } | { status, reason, period }
 async function trainDemandModel(pharmacy) {
   const period = await trainingPeriod(pharmacy.id);
   if (!period) return { status: "no_history", reason: "No sales history to train on." };
-  const rows = await getDailyDemand(pharmacy.id, period.from, period.to);
+  // History up to yesterday: the model trains on the period, and forecasts from the latest day.
+  const yesterday = addDays(today(), -1);
+  const rows = await getDailyDemand(pharmacy.id, period.from, yesterday);
   const byMedicine = new Map();
   for (const row of rows) {
     if (!byMedicine.has(row.medicine_id)) byMedicine.set(row.medicine_id, []);
     byMedicine.get(row.medicine_id).push({ date: row.day, sold: row.quantity_sold, closingOnHand: row.closing_on_hand });
   }
   const series = [...byMedicine.entries()].map(([id, days]) => ({ id, days: days.sort((a, b) => (a.date < b.date ? -1 : 1)) }));
-  const holdout = evaluateHoldout(series, { testDays: MODEL_TEST_DAYS, lambda: MODEL_LAMBDA });
-  if (!holdout) {
+  if (series.length === 0) return { status: "no_history", reason: "No products with sales history.", period };
+
+  const remote = await trainOnAiService(series, {
+    testDays: MODEL_TEST_DAYS,
+    lambda: MODEL_LAMBDA,
+    horizonDays: HORIZON_DAYS,
+    trainFrom: period.from,
+    trainTo: period.to,
+  });
+  if (remote.fallback) {
+    console.warn(`[pharmacy] demand model not trained, using the moving average: ${remote.fallback.message}`);
+    return { status: "unavailable", reason: `AI service unavailable: ${remote.fallback.message}`, fallback: remote.fallback, period };
+  }
+  if (remote.result.status === "insufficient_history") {
     return { status: "insufficient_history", reason: `Not enough history from ${period.from} to ${period.to} for a ${MODEL_TEST_DAYS}-day holdout.`, period };
   }
+
+  const r = remote.result;
   const perProduct = {};
-  for (const [id, s] of Object.entries(holdout.perSeries)) {
+  for (const [id, p] of Object.entries(r.evaluation.perSeries)) {
     perProduct[id] = {
-      observations: s.observations,
-      linearRegression: roundMetrics(s.linearRegression),
-      movingAverage: roundMetrics(s.movingAverage),
-      residualSd: round(s.residualSd, 3),
-      // The regression is used for this product only if it beat the baseline here.
-      selected: s.observations >= MIN_SELECT_OBSERVATIONS && s.linearRegression.mae < s.movingAverage.mae,
+      observations: p.observations,
+      linearRegression: roundMetrics(p.linearRegression),
+      movingAverage: roundMetrics(p.movingAverage),
+      residualSd: round(p.residualSd, 3),
+      // Decided by the model service: the regression was more accurate for this product.
+      selected: p.selected,
     };
   }
+  const forecasts = {};
+  for (const [id, f] of Object.entries(r.forecasts)) forecasts[id] = f && { start: f.start, values: f.values.map((v) => round(v, 3)) };
   return {
     status: "trained",
     model: {
       method: "linear_regression",
-      version: 1,
+      version: 2,
       units: "dispensing units per day",
-      features: FEATURES,
-      // Refitted on every row (training + held-out days) after the evaluation.
-      coefficients: fitRidge(holdout.allRows, MODEL_LAMBDA),
-      lambda: MODEL_LAMBDA,
-      lookbackDays: LOOKBACK,
+      features: r.features,
+      // Fitted on the whole training window after the evaluation.
+      coefficients: r.coefficients,
+      lambda: r.lambda,
+      lookbackDays: r.lookbackDays,
       trainedAt: new Date().toISOString(),
-      trainedOn: { source: period.source, sample: period.source === "synthetic_seed", from: period.from, to: period.to, rows: holdout.allRows.length },
-      train: holdout.train,
-      test: holdout.test,
-      metrics: { linearRegression: roundMetrics(holdout.overall.linearRegression), movingAverage: roundMetrics(holdout.overall.movingAverage) },
+      trainedBy: { engine: "ai_service", library: `scikit-learn ${r.library?.scikitLearn ?? ""}`.trim() },
+      trainedOn: { source: period.source, sample: period.source === "synthetic_seed", from: period.from, to: period.to, rows: r.rows },
+      train: r.evaluation.train,
+      test: r.evaluation.test,
+      metrics: { linearRegression: roundMetrics(r.evaluation.overall.linearRegression), movingAverage: roundMetrics(r.evaluation.overall.movingAverage) },
       perProduct,
+      // Daily demand from forecasts[id].start on, made by the AI service.
+      forecasts,
     },
   };
 }
 
 // The model of the latest completed recalculation, or null (moving average).
+// Only models that carry their forecasts (made by the AI service) are used.
 async function getActiveModel(pharmacyId) {
   const run = unwrap(
     await supabase
@@ -282,7 +305,8 @@ async function getActiveModel(pharmacyId) {
       .limit(1)
       .maybeSingle()
   );
-  return run?.engine === "linear_regression" ? (run.summary?.model ?? null) : null;
+  const model = run?.engine === "linear_regression" ? run.summary?.model : null;
+  return model?.forecasts ? model : null;
 }
 
 async function runForecast(pharmacy, userId = null) {
@@ -449,6 +473,7 @@ async function runForecast(pharmacy, userId = null) {
       notes.push(`The linear regression was trained and evaluated on sample (synthetic) history from ${model.trainedOn.from} to ${model.trainedOn.to}: a demonstration of the method, not real-world accuracy.`);
     }
     if (migrationMissing) notes.push("Linear regression not used: apply supabase/migrations/20261020000000_pharmacy_linear_regression_model.sql.");
+    if (training.status === "unavailable") notes.push(`Moving average used for every product. ${training.reason}`);
     const dataNote = notes.join(" ") || null;
 
     const finished = unwrap(

@@ -1,2 +1,5 @@
 fastapi>=0.115,<1
 uvicorn>=0.30,<1
+# Component 4 pharmacy demand model (pharmacy_demand)
+numpy>=1.26
+scikit-learn>=1.5

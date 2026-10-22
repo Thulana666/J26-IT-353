@@ -110,7 +110,8 @@ Batch-level pharmacy inventory, receiving (Confirm Receipt for matching
 deliveries; scan only disputed items to report discrepancies), POS billing
 (FEFO), purchase orders and returns shared with the warehouse application, and
 lightweight analytics: burn rate, stock cover, a linear-regression demand
-forecast compared against a moving-average baseline, and rule-based reorder
+forecast (trained with scikit-learn in the `ai-service`) compared against a
+moving-average baseline, and rule-based reorder
 quantities (Q*), under **Pharmacy** in the sidebar. Apply
 `supabase/migrations/20261010000000_create_pharmacy_schema.sql`,
 `20261010000001_create_pharmacy_functions.sql`,
