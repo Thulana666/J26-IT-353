@@ -3,8 +3,10 @@
 //   npm run train:pharmacy-model                  every active pharmacy
 //   npm run train:pharmacy-model -- SAMPLE-PH-COL  selected pharmacy codes
 //
-// Read-only: nothing is written to the database. The app trains the same model
-// (same code) when staff press Recalculate and stores it with that run.
+// Read-only: nothing is written to the database. Training and forecasting run
+// in the Python AI service (scikit-learn, POST /pharmacy-demand/train), which
+// must be running. The app does the same when staff press Recalculate and
+// stores the result with that run.
 // Uses the service-role Supabase client from backend/.env (server-side only).
 
 require("dotenv").config({ quiet: true });
@@ -36,6 +38,9 @@ async function main() {
     console.log(`Train:    ${m.train.from} to ${m.train.to} (${m.train.observations} observations)`);
     console.log(`Held out: ${m.test.from} to ${m.test.to} (${m.test.observations} observations), one-step-ahead, ${m.units}`);
     console.log(`Overall:  linear regression MAE ${fmt(m.metrics.linearRegression.mae)} RMSE ${fmt(m.metrics.linearRegression.rmse)} | moving average MAE ${fmt(m.metrics.movingAverage.mae)} RMSE ${fmt(m.metrics.movingAverage.rmse)}`);
+    console.log(`Trained by: ${m.trainedBy.library} (Python AI service)`);
+    const made = Object.values(m.forecasts).filter(Boolean);
+    console.log(`Forecasts: ${made.length} of ${Object.keys(m.forecasts).length} products, ${made[0]?.values.length ?? 0} days from ${made[0]?.start ?? "—"}`);
     console.log(`Coefficients: ${m.features.map((f, i) => `${f} ${fmt(m.coefficients[i], 3)}`).join(", ")}`);
     console.log("Per product (MAE regression / moving average, observations, method used):");
     for (const [id, p] of Object.entries(m.perProduct)) {
