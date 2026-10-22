@@ -1,20 +1,16 @@
-// News-intelligence pipeline: collect new articles (existing collector), then
-// analyse pending articles (existing processor) in batches, as ONE background
-// job. Used by the dashboard's "Run AI services" button and by the optional
-// schedule (EVENT_INTEL_PIPELINE_INTERVAL_MINUTES, default 0 = off).
+// Background job behind the "Run AI services" button: collect new articles,
+// then analyse whatever is pending in batches. The same job can also run on a
+// timer (EVENT_INTEL_PIPELINE_INTERVAL_MINUTES, off by default).
 //
-// Only one collection/analysis may run at a time in this backend: Refresh,
-// Analyse pending, Run AI services and the schedule all share runExclusive().
-// Article claims in process-articles.js additionally guard across processes.
-// Job state is in memory (lost on restart); articles left pending or failed
-// are simply picked up by the next run, so nothing is lost.
+// Only one run at a time - Refresh, Analyse pending, Run AI services and the
+// timer all go through runExclusive(). Job status is kept in memory, so it
+// resets on restart, but unfinished articles just get picked up next time.
 
 const crypto = require("node:crypto");
 const { collectArticles } = require("../ingestion/collect-articles");
 const { processArticles, DEFAULT_LIMIT } = require("./process-articles");
 
-// Upper bound per job, so one click or tick never runs for hours. The rest
-// stays pending for the next run.
+// Cap per run so one click can't run for hours. The rest waits for the next run.
 const DEFAULT_MAX_ARTICLES = 500;
 const HISTORY = 10;
 
@@ -99,7 +95,7 @@ function startPipeline(supabase, { trigger = "manual", maxArticles = DEFAULT_MAX
     try {
       await execute(supabase, job, { maxArticles, collect, process });
       job.remainingPending = await countPending(supabase).catch(() => null);
-      // partial = it ran, but something needs attention (a source, an article or the AI service).
+      // "partial" means it finished but something went wrong along the way.
       job.status = job.stopped || job.failed > 0 || job.collectionError || job.sourcesFailed > 0 ? "partial" : "completed";
     } catch (error) {
       job.status = "failed";

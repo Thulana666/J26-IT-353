@@ -29,8 +29,7 @@ function counts(job) {
   return parts.filter(Boolean).join(", ");
 }
 
-// "Run AI services": collects new articles and analyses pending ones in a
-// backend background job, then polls its progress. Admins only.
+// Starts a collect + analyse run and shows its progress. Admins only.
 export function RunAiServicesButton({ canRun }) {
   const router = useRouter();
   const [status, setStatus] = useState(null); // last /status answer
@@ -70,7 +69,7 @@ export function RunAiServicesButton({ canRun }) {
     return false;
   }, [router]);
 
-  // Initial status (shows a run started elsewhere, e.g. by the schedule), then poll while running.
+  // Check for a run already in progress, then keep polling until it's done.
   useEffect(() => {
     if (!canRun) return;
     let timer;

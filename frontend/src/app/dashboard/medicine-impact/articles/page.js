@@ -85,7 +85,7 @@ export default async function ArticlesPage({ searchParams }) {
               .
               {counts && (
                 <span className="mt-1 block">
-                  {`Analysis: ${counts.pending} awaiting, ${counts.processing} in progress, ${counts.processed} processed, ${counts.failed} failed`}
+                  {`Analysis: ${counts.pending} awaiting, ${counts.processing} in progress, ${counts.processed} processed`}
                   {counts.needsReview != null && `, ${counts.needsReview} need human review`}.
                 </span>
               )}
@@ -146,10 +146,6 @@ export default async function ArticlesPage({ searchParams }) {
                           {article.eventCategory && (
                             <div className="text-muted-foreground">{article.eventCategory.replace(/_/g, " ")}</div>
                           )}
-                        </div>
-                      ) : article.processingStatus === "failed" && article.processingError ? (
-                        <div className="text-destructive" title={article.processingError}>
-                          {article.processingError.slice(0, 80)}
                         </div>
                       ) : (
                         <span className="text-muted-foreground">—</span>

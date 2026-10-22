@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { NEWS_RELEVANCE_LABELS as LABELS } from "@/lib/news";
 import { cn } from "@/lib/utils";
 
-// Plain-language relevance, so a reader understands an item at a glance.
+// Relevance labels and colours.
 const RELEVANCE = {
   direct: { label: LABELS.direct, icon: MapPin, tile: "bg-red-500/10 text-red-600 dark:text-red-400", text: "text-red-600 dark:text-red-400" },
   indirect: { label: LABELS.indirect, icon: Link2, tile: "bg-sky-500/10 text-sky-600 dark:text-sky-400", text: "text-sky-600 dark:text-sky-400" },

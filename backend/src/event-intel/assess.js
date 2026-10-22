@@ -1,25 +1,23 @@
-// Pure helpers for the article processor: build the /event-intel/classify
-// request, turn its response into a conservative Sri Lanka relevance decision,
-// and describe the event (if any) an article should be linked to.
+// Helpers used by the article processor. They build the request sent to the
+// AI service, decide how relevant an article is to Sri Lanka, and work out
+// which event (if any) it belongs to.
 //
-// The AI service already does the text work (frozen rules + DistilRoBERTa +
-// hybrid). This module only combines its outputs; it never adds a supply-chain
-// link, disease or location that the response does not contain.
+// We only use what the AI service returns here. Nothing is guessed - if the
+// response doesn't mention a disease, place or supply link, we don't add one.
 
 // Limits of the AI service request schema (ai-service/event_intel/service/schemas.py).
 const MAX_TITLE = 1_000;
 const MAX_SUMMARY = 20_000;
 const MAX_CONTENT = 100_000;
 
-// The model is English-only (DistilRoBERTa fine-tuned on English news), and so
-// are the rule lexicons.
+// The model and the keyword lists only handle English.
 const SUPPORTED_LANGUAGES = new Set(["en"]);
 
 // Categories the pipeline turns into events. "other" never creates one.
 const EVENT_TYPES = {
   public_health: (diseases) => (diseases.length > 0 ? "disease_outbreak" : "other"),
   natural_disaster: () => "natural_disaster",
-  // Rules-only categories (the model cannot predict them): always reviewed.
+  // The model can't predict these yet, so they come from the rules and always get reviewed.
   pharma_supply: () => "supply_disruption",
   logistics: () => "supply_disruption",
   geopolitical_trade: () => "economic",
@@ -54,13 +52,12 @@ function buildRequest(article) {
     countryCode: article.country_code ?? null,
     sourceName: article.source?.name ?? null,
     sourceType: article.source?.source_type ?? null,
-    // Never let a rules-only answer be stored as a model result: a missing
-    // model is a 501, which stops the run instead.
+    // If the model isn't loaded we want a 501 and a paused run, not a rules-only result.
     requireModel: true,
   };
 }
 
-// Articles the service cannot meaningfully classify; recorded without a call.
+// Articles we can't classify (no text, or not English). Saved without calling the service.
 function precheck(article) {
   if (![article.title, article.summary, article.content].some(hasText)) {
     return { relevance: "uncertain", reason: "No title, summary or content to analyse." };
@@ -75,9 +72,8 @@ function precheck(article) {
   return null;
 }
 
-// Sri Lanka relevance from the rules evidence and the final (hybrid) category.
-// The rules decide relevance from their own category; when the hybrid category
-// disagrees, the result is downgraded to uncertain rather than guessed.
+// Decides how the article relates to Sri Lanka. The rules give the base answer;
+// if the rules and the final category disagree we mark it uncertain instead of guessing.
 function assessRelevance(response) {
   const rules = response.rules ?? {};
   const category = response.hybrid?.category ?? rules.category ?? "other";
@@ -134,16 +130,16 @@ function hazardOf(response) {
   return plain ? String(plain.term).toLowerCase() : null;
 }
 
-// The event an article belongs to, or null (no event for irrelevant/uncertain articles).
+// Works out which event an article belongs to. Returns null for articles that
+// aren't relevant enough to need one.
 //
-// Grouping uses event identity, not time alone (version v2):
-//   * GDACS alert            -> its alert id (episodes of the same alert merge; different alerts never do)
-//   * disease (public health) -> disease + place, within GROUP_WINDOW_DAYS (processor)
-//   * natural disaster        -> hazard + place, within GROUP_WINDOW_DAYS
-//   * anything weaker (no disease/hazard, rules-only supply/logistics/trade categories)
-//     -> a standalone event for this article only: an uncertain match is never merged.
-// place = most specific Sri Lankan place (direct), "global" for global reports, else the
-// foreign country codes named in the title/text.
+// How articles are grouped (v2):
+//   - GDACS alerts: by alert id, so two different alerts are never merged
+//   - outbreaks: same disease + same place, within GROUP_WINDOW_DAYS
+//   - other disasters: same hazard (flood, cyclone...) + same place, within GROUP_WINDOW_DAYS
+//   - anything else gets its own event, because we can't match it reliably
+// "Place" is the Sri Lankan district/province for local events, "global" for
+// worldwide reports, otherwise the countries named in the article.
 function eventPlan(article, response, assessment) {
   const category = response.hybrid?.category ?? "other";
   if (!EVENT_TYPES[category] || !["direct", "indirect"].includes(assessment.relevance)) return null;
@@ -154,7 +150,7 @@ function eventPlan(article, response, assessment) {
   // Most specific Sri Lankan place first (district, then province).
   const lkPlaces = ["district", "province"].flatMap((t) => (entities.sri_lanka_locations ?? []).filter((l) => l.type === t));
   const foreign = (entities.foreign_countries ?? []).map((c) => ({ ...c, name: countryName(c) }));
-  // A global / multi-country report is not placed in whichever country its text names first.
+  // Don't pin a worldwide report on the first country it happens to mention.
   const global = response.rules?.event_scope === "global";
   const week = weekStart(article.published_at ?? article.fetched_at);
   if (!week) return null;
@@ -178,7 +174,7 @@ function eventPlan(article, response, assessment) {
     group: identity.group,
     windowed: identity.windowed,
     standalone,
-    // Windowed groups get one event per ISO week at most; others exactly one per group.
+    // Windowed groups key on the week too, other groups have one event each.
     dedupeKey: identity.windowed ? `${identity.group}:${week}` : identity.group,
     title: `${label}${what} – ${where}`,
     eventType: EVENT_TYPES[category](diseases),
@@ -188,8 +184,7 @@ function eventPlan(article, response, assessment) {
     diseaseNames: [...new Set(diseases.map((d) => d.name))],
     hazard,
     alertId: alert,
-    // Sri Lankan places are event locations only when the event is in Sri Lanka;
-    // a foreign report that merely mentions Sri Lanka is not located there.
+    // Only link Sri Lankan places when the event actually happens in Sri Lanka.
     sriLankaLocations: direct ? entities.sri_lanka_locations ?? [] : [],
     foreignCountries: direct || global ? [] : foreign.slice(0, 3),
   };

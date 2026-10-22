@@ -24,6 +24,8 @@ async function getArticleIndex(supabase) {
     const { data, error } = await supabase
       .from("event_articles")
       .select("id, title, data_source_id")
+      // Failed analyses are retried automatically and not shown until they succeed.
+      .neq("processing_status", "failed")
       .order("published_at", { ascending: false, nullsFirst: false })
       .order("fetched_at", { ascending: false })
       .order("id")
@@ -123,7 +125,7 @@ export async function getArticleProcessingCounts() {
     if (error) throw error;
     return count ?? 0;
   };
-  const statuses = ["pending", "processing", "processed", "failed"];
+  const statuses = ["pending", "processing", "processed"];
   const values = await Promise.all(statuses.map((s) => count((q) => q.eq("processing_status", s))));
   const counts = Object.fromEntries(statuses.map((s, i) => [s, values[i]]));
   try {
@@ -172,10 +174,10 @@ export async function getNewsFreshness() {
     if (error) throw new Error(`Could not count articles: ${error.message}`);
     return count ?? 0;
   };
-  const [lastCollectedAt, lastAnalysedAt, pending, failed] = await Promise.all([
-    latest("fetched_at"), latest("processed_at"), count("pending"), count("failed"),
+  const [lastCollectedAt, lastAnalysedAt, pending] = await Promise.all([
+    latest("fetched_at"), latest("processed_at"), count("pending"),
   ]);
-  return { lastCollectedAt, lastAnalysedAt, pending, failed };
+  return { lastCollectedAt, lastAnalysedAt, pending };
 }
 
 // Totals for the Recent News summary cards (same base set as the list, no filters).
