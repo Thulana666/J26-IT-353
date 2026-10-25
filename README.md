@@ -1,177 +1,316 @@
-# J26-IT-353
+&nbsp;
 
-## Frontend authentication (Supabase)
+# PharmaTwin
 
-The Next.js app in `frontend/` uses Supabase Auth (email/password) with a
-`public.profiles` table linked to `auth.users`.
+### AI-Driven Digital Twin for Resilient Pharmaceutical Supply Chain Optimization
 
-1. Run the files in `supabase/migrations/` in order, in the Supabase SQL
-   editor (or `supabase db push`):
-   - `20261004000000_create_profiles.sql`: `profiles`, a trigger that adds a
-     profile for every new auth user, and row level security.
-   - `20261005000000_create_demand_forecasting_schema.sql`: the event
-     analysis and demand forecasting tables. Signed-in users can read them;
-     only admins (`profiles.role = 'admin'`) can write.
-2. Create `frontend/.env.local` with `NEXT_PUBLIC_SUPABASE_URL` and
-   `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (project URL and publishable key
-   from Project Settings > API).
-3. Sign up at `/signup` (or add users in Supabase Dashboard > Authentication >
-   Users). Set a user's
-   `role` (`admin` / `user`) or `status` (`active` / `inactive`) in the
-   `profiles` table.
-4. `cd frontend && npm run dev`, then open http://localhost:3000.
+**J26-IT-353 · SLIIT Final Year Research Project**
 
-Unauthenticated requests are redirected to `/login` by `src/proxy.js`;
-signed-in users land on `/dashboard`. Email confirmation is turned off in
-the Supabase project (Authentication > Sign In / Providers > Email), so new
-users are signed in immediately after signing up.
+[**Repository**](https://github.com/Thulana666/J26-IT-353) · [**Component Docs**](docs/)
 
-## Article ingestion (Component 1)
+&nbsp;
 
-`backend/` collects external articles into `event_articles` (status
-`pending`, no NLP yet). They appear on **Medicine Impact → Articles / Sources**.
+---
 
-| Key | Source | Feed | Filtering |
-|---|---|---|---|
-| `who` | WHO Disease Outbreak News | Official WHO API (latest 100) | none (all items are health events) |
-| `reliefweb` | ReliefWeb (UN OCHA) | Official API v2: Sri Lanka reports + declared disasters | none (Sri Lanka only); needs `RELIEFWEB_APPNAME` |
-| `gdacs` | GDACS (UN / European Commission) | Official API: Sri Lanka hazard alerts since 2010 | none (Sri Lanka only) |
-| `newsapi` | NewsAPI | NewsAPI.org search (`NEWS_API_KEY`) | query: "Sri Lanka" + dengue/outbreak/epidemic/public health/health emergency/medicine, or flood/disaster + health |
-| `health-ministry` | Ministry of Health Sri Lanka | Official website feed | none (official notices) |
-| `daily-mirror` | Daily Mirror (Sri Lanka) | Official breaking-news RSS | health/disaster keywords in title or summary |
-| `daily-news` | Daily News (Lake House) | Official RSS | health/disaster keywords in title or summary |
-| `sunday-observer` | Sunday Observer (Lake House) | Official RSS | health/disaster keywords in title or summary |
+## What is PharmaTwin?
 
-1. Create `backend/.env` (git-ignored, server-side only) with:
+PharmaTwin is a full-stack digital twin of Sri Lanka's pharmaceutical supply chain. It follows medicines from **global events** that may disrupt supply, through the **warehouse** and **refrigerated transport**, to the **pharmacy shelf**. Along the way it uses **NLP**, **IoT sensor data**, **machine learning** and **explainable optimisation rules** to help the supply chain anticipate disruptions, protect cold-chain stock, dispatch by earliest expiry and reorder the right quantities.
 
-   ```
-   PORT=5000
-   SUPABASE_URL=https://your-project-ref.supabase.co
-   SUPABASE_SECRET_KEY=your-secret-service-role-key
-   NEWS_API_KEY=your-newsapi-org-key
-   RELIEFWEB_APPNAME=your-approved-reliefweb-appname
-   ```
+All four components share one Supabase database, so a pharmacy's purchase order, the warehouse dispatch, the monitored truck trip and the pharmacy's receipt are one connected record.
 
-   - `NEWS_API_KEY`: free at https://newsapi.org (developer plan:
-     development use, 100 requests/day, articles delayed ~24h).
-   - `RELIEFWEB_APPNAME`: free, but must be approved by ReliefWeb; request
-     it via the form linked at https://apidoc.reliefweb.int/parameters.
-     Without it the ReliefWeb source is skipped.
-2. `cd backend && npm install`
-3. Run the collector manually:
+---
 
-   ```bash
-   npm run collect:articles                 # all sources
-   npm run collect:articles -- gdacs who    # selected sources (keys above)
-   npm run backfill:countries               # fill missing countries from titles
-   ```
+## Features
 
-**Refresh button:** admins can also run the collector from the Articles /
-Sources page. It calls the backend (`POST /api/ingestion/articles`)
-server-to-server, so the backend must be running (`cd backend && npm run dev`)
-and both env files need the same secret:
+### Component 1 — Global Event Analysis & Demand Forecasting
 
-- `backend/.env`: `INGESTION_API_KEY=<long random string>`
-- `frontend/.env.local`: `INGESTION_API_KEY=<same value>` and
-  `BACKEND_URL=http://localhost:5000`
+| Feature | Description |
+| :---- | :---- |
+| **Multi-source Ingestion** | Collects articles from WHO DON, ReliefWeb, GDACS, NewsAPI, Ministry of Health and Sri Lankan news RSS feeds |
+| **Event Classification** | Frozen rules + fine-tuned DistilRoBERTa + hybrid classify articles into 6 event categories |
+| **Sri Lanka Relevance** | Labels each article as direct / indirect / none / uncertain, with a reason |
+| **Event Grouping** | Groups related articles into de-duplicated events with locations |
+| **Automated Pipeline** | One-click or scheduled collect → analyse runs, with a shared lock and retries |
+| **Labelled Dataset** | Label guide, grouped train/val/test split, frozen test set for evaluation |
 
-Re-running is safe: articles are matched by URL, so only new ones are added
-and existing rows are never changed. One failing source doesn't stop the
-others; a source without its key is reported as skipped. Set
-`data_sources.is_active = false` to pause a source. Daily Mirror's robots.txt
-asks for at most one request per hour, and ReliefWeb's robots.txt disallows
-automated RSS access (hence its API is used).
+&nbsp;
 
-### NLP analysis of collected articles
+### Component 2 — IoT Cold-Chain Tracking & Logistics Risk
 
-Pending articles are sent by the backend to the private AI service
-(`POST /event-intel/classify`: frozen rules + DistilRoBERTa + hybrid). The
-result is stored on the article: `analysis`, `event_category`,
-`sri_lanka_relevance` (direct / indirect / none / uncertain),
-`relevance_reason` and `needs_review`. Relevant events are grouped into
-NLP-generated `events` with their `event_locations` (code:
-`backend/src/event-intel/`).
+| Feature | Description |
+| :---- | :---- |
+| **Trip Workflow** | Dispatch → driver/truck allocation → in transit → delivery → history |
+| **Live Sensor Data** | ESP32 loggers (SHT31 · NEO-6M · MPU6050) send temperature, humidity, GPS and speed |
+| **Observed Alerts** | Temperature/humidity limit alerts that escalate and resolve automatically |
+| **Risk Prediction** | Temperature-excursion, delay and route risk, refreshed every few minutes |
+| **Driver Portal** | Drivers view and update their own trips |
+| **Simulator** | Simulated sensor scenarios (normal, rising, excursion, humidity, GPS jump) for testing |
 
-1. Run `supabase/migrations/20261021000000_add_article_analysis_fields.sql`
-   (additive). The processor refuses to start without it.
-2. Copy `ai-service/.env.example` to `ai-service/.env` (it points
-   `EVENT_INTEL_MODEL_DIR` at the deployed seed-13 checkpoint), then start the
-   AI service. Without a loaded model, runs pause rather than store rules-only
-   results.
-3. Set `AI_SERVICE_URL` in `backend/.env` if the service is not on
-   `http://localhost:8000`.
-4. Trigger processing:
-   - **Analyse pending** on the Articles page (25 articles per click);
-   - **Refresh**, which also analyses up to 25 articles after collecting;
-   - `cd backend && npm run process:articles -- 200`.
+&nbsp;
 
-**Safety:**
-- Each article is claimed atomically and retried at most 3 times, at least
-  5 minutes apart.
-- An unreachable service or a missing model stops the run without using up an
-  attempt.
-- Events are de-duplicated by `events.dedupe_key`: category + disease or place
-  + ISO week.
-- Non-English or empty articles are recorded as `uncertain` and flagged for
-  review without a model call.
-- Severity is not rated, and indirect links are channels to check, not
-  confirmed impacts.
+### Component 3 — Intelligent Warehouse FEFO & QR Management
 
-### Run AI services and the schedule
+| Feature | Description |
+| :---- | :---- |
+| **FEFO Dispatch** | First-Expiry-First-Out picking, with override reasons and a compliance rate |
+| **QR Batch Labels** | Check-digit QR codes for batches and storage locations; camera or scanner |
+| **Spatial Allocation** | Ranked storage-location recommendations (expiry, capacity, consolidation, zone) |
+| **Order Fulfilment** | Reserve, pick, verify and dispatch pharmacy orders; hand-off to Component 2 |
+| **Movement History** | Transactional stock ledger, scan history, discrepancies and returns |
 
-**Run AI services** (Recent News page, admins only) starts one background job
-on the backend: collect new articles, then analyse pending ones in batches of
-25, up to 500 per run. The button polls `GET /api/event-intel/status` and
-shows collected / analysed / flagged / failed / still-pending counts. Both
-`POST /api/event-intel/run` and the status endpoint use `INGESTION_API_KEY`
-and are called server-to-server only.
+&nbsp;
 
-Refresh, Analyse pending, Run AI services and the schedule share one lock, so
-runs never overlap; a second click answers 409. A run that stops (AI service
-down, no model loaded) leaves articles pending for the next run.
+### Component 4 — Intelligent Pharmacy Analytics & Stock Optimization
 
-**Schedule (optional):** set `EVENT_INTEL_PIPELINE_INTERVAL_MINUTES=60` in
-`backend/.env`. The backend then runs the same job every 60 minutes; 0 or
-unset means off. It only runs while the backend process (and the AI service)
-are running, and job history is kept in memory (it resets on restart). The
-Recent News page reads "Last collected / Last analysed" from the database.
+| Feature | Description |
+| :---- | :---- |
+| **Batch Inventory** | Batch-level stock with holds on disputed items |
+| **Receiving** | Confirm receipt, or scan only disputed items to report discrepancies |
+| **POS Billing** | Barcode point of sale that sells from the earliest-expiring batch (FEFO) |
+| **Demand Forecasting** | Ridge regression forecast, used per product only where it beats the moving average |
+| **Reorder Recommendations** | Rule-based Q\* with safety stock and a step-by-step explanation |
+| **Stock Analytics** | Burn rate, days of cover, expiry risk, actual vs estimated, alerts |
 
-## IoT cold-chain tracking & logistics risk (Component 2)
+&nbsp;
 
-Trips for dispatched shipments: drivers and refrigerated trucks, allocation,
-live sensor readings from ESP32 loggers (temperature, humidity, GPS, speed),
-alerts, predicted risk (a temporary, labelled rule-based prototype until the
-models in `ai-service/cold_chain/` are trained on real trips and installed),
-delivery and history, under **Cold Chain** in the sidebar. Apply
-`supabase/migrations/20261017000000_create_cold_chain_schema.sql`,
-`20261018000002_cold_chain_logistics.sql`,
-`20261018000003_cold_chain_driver_portal.sql` and
-`20261019000000_cold_chain_trained_risk.sql` after the pharmacy and warehouse
-migrations, and run the backend. Workflow, device API, dashboard API, risk
-prediction and testing: [docs/component-2-cold-chain.md](docs/component-2-cold-chain.md).
+---
 
-## Warehouse FEFO & QR (Component 3)
+## Architecture
 
-FEFO inventory, QR batch labels/scanning, movement history and storage-location
-recommendations, under **Warehouse** in the sidebar. Apply
-`supabase/migrations/20261008000000_create_warehouse_schema.sql`, run the
-backend and the Python service in `ai-service/`. Architecture, API, database,
-FEFO/QR/allocation logic and setup: [docs/component-3-warehouse.md](docs/component-3-warehouse.md).
+```
+  WHO · ReliefWeb · GDACS · NewsAPI            ESP32 cold-chain loggers
+  MoH · Daily Mirror · Daily News · Observer   (temp · humidity · GPS · speed)
+                  │                                        │ HTTPS + device key
+                  │                                        │
+┌──────────────────┼────────────────────────────────────────┼────────────────┐
+│                  │      Next.js 16 frontend (App Router)  │                │
+│                  │  Server Components · Server Actions    │                │
+│                  │  Medicine Impact · Cold Chain ·        │                │
+│                  │  Warehouse · Pharmacy dashboards       │                │
+└──────────────────┼───────────────────┬────────────────────┼────────────────┘
+                   │                   │  user's Supabase   │
+                   │                   │  access token      │
+┌──────────────────▼───────────────────▼────────────────────▼────────────────┐
+│                    Express 5 backend API  (:5000)                          │
+│    Auth & role checks · Zod validation · schedulers · ingestion            │
+│  /api/ingestion · /api/event-intel · /api/cold-chain · /api/warehouse ·    │
+│  /api/medicines · /api/pharmacy                                            │
+└──────┬─────────────────────────────────────────────────────┬───────────────┘
+       │ service role                                        │ HTTP (data sent
+       │                                                     │ with each request)
+┌──────▼───────────────────────┐         ┌───────────────────▼───────────────┐
+│          Supabase            │         │   FastAPI AI service  (:8000)     │
+│  PostgreSQL · Auth · RLS     │         │   stateless, no DB access         │
+│  Realtime · SQL functions    │         │  /event-intel/classify            │
+│  (transactional stock ops)   │         │  /cold-chain/predict              │
+└──────────────┬───────────────┘         │  /warehouse/spatial/recommend     │
+               │ Realtime                │  /pharmacy-demand/train           │
+               ▼                         └───────────────────────────────────┘
+        live dashboards
+```
 
-## Pharmacy analytics & stock optimisation (Component 4)
+The browser never sees the Supabase secret key. Every write goes Next.js server action → backend → database function.
 
-Batch-level pharmacy inventory, receiving (Confirm Receipt for matching
-deliveries; scan only disputed items to report discrepancies), POS billing
-(FEFO), purchase orders and returns shared with the warehouse application, and
-lightweight analytics: burn rate, stock cover, a linear-regression demand
-forecast (trained with scikit-learn in the `ai-service`) compared against a
-moving-average baseline, and rule-based reorder
-quantities (Q*), under **Pharmacy** in the sidebar. Apply
-`supabase/migrations/20261010000000_create_pharmacy_schema.sql`,
-`20261010000001_create_pharmacy_functions.sql`,
-`20261012000000_update_pharmacy_receiving.sql`,
-`20261016000000_pharmacy_inventory_holds.sql` and
-`20261020000000_pharmacy_linear_regression_model.sql` in order, optionally run
-`supabase/seed/sample_pharmacy.sql` (SAMPLE pharmacies with synthetic history),
-and run the backend. Roles, workflows, formulas, the warehouse integration
-contract and setup: [docs/component-4-pharmacy.md](docs/component-4-pharmacy.md).
+&nbsp;
+
+---
+
+## Tech Stack
+
+**Frontend**
+
+- Next.js 16 (App Router, Server Components, Server Actions) · React 19
+- JavaScript · Tailwind CSS 4 · shadcn/ui · Base UI
+- Recharts · Motion · lucide-react
+- jsQR / `BarcodeDetector` for camera QR and barcode scanning
+- Supabase SSR auth with role-based navigation
+
+**Backend API**
+
+- Node.js · Express 5
+- Supabase JS (service role, server-side only) · Zod validation
+- `qrcode` label generation
+- In-process schedulers for the event pipeline, cold-chain risk and pharmacy forecasts
+
+**AI Service (Python)**
+
+- FastAPI · Uvicorn
+- PyTorch · Hugging Face Transformers (DistilRoBERTa event classifier, CNN-LSTM)
+- scikit-learn (Ridge regression, logistic regression, random forest, gradient boosting)
+- NumPy · Matplotlib (evaluation plots)
+
+**Database**
+
+- Supabase PostgreSQL with Row-Level Security on every table
+- Transactional SQL functions for all stock changes
+- Supabase Realtime for shipments, alerts, discrepancies and stock
+- Supabase Auth with `profiles` roles (admin, warehouse_staff, pharmacy_staff, user)
+
+**IoT**
+
+- ESP32 with SHT31 (temperature/humidity), NEO-6M (GPS), MPU6050 (motion)
+- Per-device keys stored as SHA-256 hashes
+
+**Testing**
+
+- `node --test` with PGlite and embedded-PostgreSQL database and concurrency tests
+- Python `unittest` for the AI service, dataset tools and frozen rules
+
+---
+
+## Repository Layout
+
+```
+J26-IT-353/
+├── frontend/                     # Next.js 16 web app
+│   └── src/app/dashboard/        # Medicine Impact · cold-chain · warehouse · pharmacy
+├── backend/                      # Express 5 API
+│   ├── src/
+│   │   ├── ingestion/            # C1: article collectors (WHO, ReliefWeb, GDACS, RSS...)
+│   │   ├── event-intel/          # C1: NLP processing pipeline & events
+│   │   ├── cold-chain/           # C2: trips, readings, alerts, risk/
+│   │   ├── warehouse/            # C3: FEFO, QR, fulfilment, integrations
+│   │   └── pharmacy/             # C4: inventory, POS, orders, analytics/
+│   ├── scripts/                  # collectors, exporters, simulator, model training
+│   └── test/                     # unit, HTTP, PGlite & concurrency tests
+├── ai-service/                   # FastAPI AI / optimisation service
+│   ├── event_intel/              # C1: classifier, dataset tools, experiments
+│   ├── cold_chain/               # C2: preprocessing, CNN-LSTM, training, inference
+│   ├── warehouse/                # C3: spatial allocation
+│   ├── pharmacy_demand/          # C4: Ridge demand model
+│   ├── data/                     # label guide, manifests, splits (allow-listed)
+│   └── tests/
+├── supabase/
+│   ├── migrations/               # schema, RLS, functions (apply in filename order)
+│   └── seed/                     # SAMPLE data & synthetic-history cleanup
+└── docs/                         # per-component technical documentation
+```
+
+&nbsp;
+
+---
+
+## ML Models
+
+| Model | Task | Status |
+| :---- | :---- | :---- |
+| Rules baseline v0.1.0 | Event category & Sri Lanka relevance (baseline) | Frozen for comparison |
+| DistilRoBERTa (fine-tuned) | 6-class event classification | Deployed in AI service |
+| Hybrid (rules + DistilRoBERTa) | Final article classification | Deployed in AI service |
+| CNN-LSTM | Temperature-excursion risk | Pipeline ready, awaiting real trip data |
+| LR · Random Forest · GBM | Temperature-risk baselines | Pipeline ready, awaiting real trip data |
+| Gradient Boosting (tuned) | Late-delivery risk | Pipeline ready, awaiting real trip data |
+| Rule-based prototype | Cold-chain risk (temporary) | In use, labelled as prototype |
+| Ridge regression | Pharmacy daily demand forecast | In use where it beats the 28-day moving average |
+| Multi-criteria heuristic | Warehouse storage-location ranking | In use (not a trained model) |
+| Q\* reorder rule | Reorder quantity with safety stock | In use (rule-based, explainable) |
+
+Evaluation rules: the event test split is used once for the final comparison, rules predictions are never used as labels, and models trained on test or simulated cold-chain data are refused at install time. See [ai-service/data/README.md](ai-service/data/README.md).
+
+&nbsp;
+
+---
+
+## Team
+
+| Member | Component | Responsibility |
+| :---- | :---- | :---- |
+| **Thulana De Silva** | Component 1 — Global Event Analysis | Ingestion · Event Classification · Relevance · Demand Signals |
+| **_Name_** | Component 2 — Cold-Chain Tracking | IoT Tracking · Alerts · Risk Prediction |
+| **_Name_** | Component 3 — Warehouse | FEFO · QR · Spatial Allocation · Fulfilment |
+| **_Name_** | Component 4 — Pharmacy Analytics | Inventory · POS · Demand Forecast · Q\* |
+
+&nbsp;
+
+---
+
+## Getting Started (Local)
+
+**Prerequisites:** Node.js ≥ 20.9, npm, Python ≥ 3.10, a Supabase project
+
+```sh
+# 1. Clone
+git clone https://github.com/Thulana666/J26-IT-353.git
+cd J26-IT-353
+
+# 2. Database: apply supabase/migrations/ in filename order
+#    (Supabase SQL editor, or `supabase db push`), then:
+#    notify pgrst, 'reload schema';
+#    Optional sample data: supabase/seed/*.sql
+
+# 3. Backend API
+cd backend
+cp .env.example .env
+# Fill in: SUPABASE_URL, SUPABASE_SECRET_KEY, INGESTION_API_KEY
+#          (+ optional NEWS_API_KEY, RELIEFWEB_APPNAME, AI_SERVICE_URL ...)
+npm install
+npm run dev
+# → http://localhost:5000
+
+# 4. AI service (new terminal)
+cd ai-service
+python -m venv .venv
+.venv\Scripts\pip install -r requirements-event-model.txt   # macOS/Linux: .venv/bin/pip
+cp .env.example .env                                          # EVENT_INTEL_MODEL_DIR
+.venv\Scripts\uvicorn main:app --port 8000
+# → http://localhost:8000/health
+
+# 5. Frontend (new terminal)
+cd frontend
+cp .env.example .env.local
+# Fill in: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+#          INGESTION_API_KEY (same as backend), BACKEND_URL=http://localhost:5000
+npm install
+npm run dev
+# → http://localhost:3000
+```
+
+Sign up at `/signup`, then set the user's `role` in the `profiles` table (`admin`, `warehouse_staff`, `pharmacy_staff` or `user`).
+
+**Run the tests**
+
+```sh
+cd backend && npm test
+cd ai-service && .venv\Scripts\python -m unittest discover tests
+cd frontend && npm run lint && npm run build
+```
+
+**Useful scripts** (from `backend/`)
+
+```sh
+npm run collect:articles                 # collect articles from all sources
+npm run process:articles -- 200          # classify up to 200 pending articles
+npm run train:pharmacy-model             # print the demand-model report
+node --env-file=.env scripts/simulate-cold-chain.js --shipment SH-xxxxxx --scenario rising
+```
+
+&nbsp;
+
+---
+
+## Component Documentation
+
+| Component | Document |
+| :---- | :---- |
+| Component 1 — Global Event Analysis & Demand Forecasting | [docs/component-1-event-intelligence.md](docs/component-1-event-intelligence.md) |
+| Component 2 — IoT Cold-Chain Tracking & Logistics Risk | [docs/component-2-cold-chain.md](docs/component-2-cold-chain.md) |
+| Component 3 — Intelligent Warehouse FEFO & QR | [docs/component-3-warehouse.md](docs/component-3-warehouse.md) |
+| Component 4 — Pharmacy Analytics & Stock Optimization | [docs/component-4-pharmacy.md](docs/component-4-pharmacy.md) |
+| Event dataset & labelling | [ai-service/data/README.md](ai-service/data/README.md) |
+| Cold-chain model training | [ai-service/cold_chain/models/README.md](ai-service/cold_chain/models/README.md) |
+
+&nbsp;
+
+| Service | Default URL |
+| :---- | :---- |
+| Frontend | http://localhost:3000 |
+| Backend API | http://localhost:5000 (`/api/health`) |
+| AI service | http://localhost:8000 (`/health`, `/docs`) |
+
+&nbsp;
+
+---
+
+## License
+
+Academic use only — SLIIT J26-IT-353 Research Project · 2026
