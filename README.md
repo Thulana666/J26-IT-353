@@ -215,10 +215,10 @@ Evaluation rules: the event test split is used once for the final comparison, ru
 
 | Member | Component | Responsibility |
 | :---- | :---- | :---- |
-| **Thulana De Silva** | Component 1 — Global Event Analysis | Ingestion · Event Classification · Relevance · Demand Signals |
-| **_Name_** | Component 2 — Cold-Chain Tracking | IoT Tracking · Alerts · Risk Prediction |
-| **_Name_** | Component 3 — Warehouse | FEFO · QR · Spatial Allocation · Fulfilment |
-| **_Name_** | Component 4 — Pharmacy Analytics | Inventory · POS · Demand Forecast · Q\* |
+| **Lewhan N.T.** | Component 1 — Global Event Analysis | Ingestion · Event Classification · Relevance · Demand Signals |
+| **Perera I.L.J.C.** | Component 2 — Cold-Chain Tracking | IoT Tracking · Alerts · Risk Prediction |
+| **De Silva T.T.R.** | Component 3 — Warehouse | FEFO · QR · Spatial Allocation · Fulfilment |
+| **Gunarathne K.A.K.W.** | Component 4 — Pharmacy Analytics | Inventory · POS · Demand Forecast · Q\* |
 
 &nbsp;
 
